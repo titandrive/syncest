@@ -50,7 +50,8 @@ function Syncest:_autoNotify(label)
         for _, k in ipairs(order) do
             if self._notify_labels[k] then parts[#parts + 1] = k end
         end
-        UIManager:show(InfoMessage:new{
+        local Notification = require("ui/widget/notification")
+        UIManager:show(Notification:new{
             text = table.concat(parts, ", ") .. " synced",
             timeout = 2,
         })
