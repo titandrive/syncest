@@ -476,7 +476,7 @@ local function runCloudSync(opts, store)
     end
     local mode = opts.settings.auto_sync and "both" or "pull"
     local DocSettings = require("docsettings")
-    local BookList = require("ui/widget/booklist")
+    local ok_bl, BookList = pcall(require, "ui/widget/booklist")
     local statussync = require("library.statussync")
     local deps = {
         now_ms = function() return os.time() * 1000 end,
@@ -493,7 +493,9 @@ local function runCloudSync(opts, store)
             summary.modified = os.date("%Y-%m-%d", os.time())
             ds:saveSetting("summary", summary)
             ds:flush()
-            BookList.setBookInfoCacheProperty(file_path, "status", ko_status)
+            if ok_bl and BookList and BookList.setBookInfoCacheProperty then
+                BookList.setBookInfoCacheProperty(file_path, "status", ko_status)
+            end
         end,
     }
     local function reconcile() statussync.reconcileLocalStatuses(store, deps) end

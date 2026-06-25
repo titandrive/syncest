@@ -119,7 +119,7 @@ local GROUP_WHITELIST = {
 -- library when uploadedAt is set, and keeps locally-imported books that
 -- carry a downloadedAt — see useBooksSync.updateLibrary at
 -- apps/readest-app/src/app/library/hooks/useBooksSync.ts:136-139.
-local VISIBLE_BOOK_SQL = "(uploaded_at IS NOT NULL OR local_present = 1)"
+local VISIBLE_BOOK_SQL = "cloud_present = 1"
 
 local M = {}
 M.__index = M
