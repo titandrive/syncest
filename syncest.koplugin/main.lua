@@ -123,7 +123,7 @@ end
 
 function Syncest:onReaderReady()
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
-        UIManager:nextTick(function()
+        UIManager:scheduleIn(4, function()
             if self.settings.auto_pull_progress ~= false then
                 self:pullBookConfig(false, true)
             end
