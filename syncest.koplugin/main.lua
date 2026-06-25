@@ -253,16 +253,17 @@ function Syncest:addToMainMenu(menu_items)
                 end,
             },
             {
-                text = _("Auto sync"),
-                checked_func = function() return self.settings.auto_sync end,
-                callback = function() self:onSyncestToggleAutoSync() end,
-            },
-            {
-                text = _("Auto sync settings"),
-                enabled_func = function() return self.settings.auto_sync end,
+                text = _("Sync settings"),
                 sub_item_table = {
                     {
+                        text = _("Auto sync"),
+                        checked_func = function() return self.settings.auto_sync end,
+                        callback = function() self:onSyncestToggleAutoSync() end,
+                        separator = true,
+                    },
+                    {
                         text = _("Push reading progress on page turn"),
+                        enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
                             return self.settings.auto_push_progress ~= false
                         end,
@@ -274,6 +275,7 @@ function Syncest:addToMainMenu(menu_items)
                     },
                     {
                         text = _("Pull reading progress on book open"),
+                        enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
                             return self.settings.auto_pull_progress ~= false
                         end,
@@ -285,6 +287,7 @@ function Syncest:addToMainMenu(menu_items)
                     },
                     {
                         text = _("Push annotations on change"),
+                        enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
                             return self.settings.auto_push_annotations ~= false
                         end,
@@ -296,6 +299,7 @@ function Syncest:addToMainMenu(menu_items)
                     },
                     {
                         text = _("Pull annotations on book open"),
+                        enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
                             return self.settings.auto_pull_annotations ~= false
                         end,
@@ -307,6 +311,7 @@ function Syncest:addToMainMenu(menu_items)
                     },
                     {
                         text = _("Push stats on book close"),
+                        enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
                             return self.settings.auto_push_stats ~= false
                         end,
@@ -318,6 +323,7 @@ function Syncest:addToMainMenu(menu_items)
                     },
                     {
                         text = _("Pull stats on book open"),
+                        enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
                             return self.settings.auto_pull_stats ~= false
                         end,
@@ -329,6 +335,7 @@ function Syncest:addToMainMenu(menu_items)
                     },
                     {
                         text = _("Sync book catalog on book close"),
+                        enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
                             return self.settings.auto_sync_catalog ~= false
                         end,
