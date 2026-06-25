@@ -253,14 +253,13 @@ function Syncest:addToMainMenu(menu_items)
                 end,
             },
             {
+                text = _("Auto sync"),
+                checked_func = function() return self.settings.auto_sync end,
+                callback = function() self:onSyncestToggleAutoSync() end,
+            },
+            {
                 text = _("Sync settings"),
                 sub_item_table = {
-                    {
-                        text = _("Auto sync"),
-                        checked_func = function() return self.settings.auto_sync end,
-                        callback = function() self:onSyncestToggleAutoSync() end,
-                        separator = true,
-                    },
                     {
                         text = _("Push reading progress on page turn"),
                         enabled_func = function() return self.settings.auto_sync end,
@@ -345,16 +344,15 @@ function Syncest:addToMainMenu(menu_items)
                             G_reader_settings:saveSetting("webdav_sync", self.settings)
                         end,
                     },
+                    {
+                        text = _("Mirror progress to KOSync"),
+                        checked_func = function() return self.settings.mirror_to_kosync end,
+                        callback = function()
+                            self.settings.mirror_to_kosync = not self.settings.mirror_to_kosync
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
                 },
-                separator = true,
-            },
-            {
-                text = _("Mirror progress to KOSync"),
-                checked_func = function() return self.settings.mirror_to_kosync end,
-                callback = function()
-                    self.settings.mirror_to_kosync = not self.settings.mirror_to_kosync
-                    G_reader_settings:saveSetting("webdav_sync", self.settings)
-                end,
                 separator = true,
             },
             {
