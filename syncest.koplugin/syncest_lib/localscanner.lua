@@ -177,6 +177,74 @@ function M.lightScan(opts)
     return stale, added
 end
 
+-- Book file extensions to include in directory scan
+local BOOK_EXTS = {
+    epub=true, pdf=true, mobi=true, azw=true, azw3=true, fb2=true,
+    djvu=true, cbz=true, cbr=true, txt=true, rtf=true, doc=true, docx=true,
+    lit=true, pdb=true, lrf=true, kfx=true, zip=true,
+}
+
+-- ---------------------------------------------------------------------------
+-- dirScan(opts) — walk a directory tree and upsert every book that has a
+-- KOReader sidecar (meaning it's been opened and has a hash).
+-- opts: { store = LibraryStore, dir = string }
+-- ---------------------------------------------------------------------------
+function M.dirScan(opts)
+    local lfs = require("libs/libkoreader-lfs")
+    local DocSettings = require("docsettings")
+    local store = opts.store
+    local root  = opts.dir
+    if not store or not root or root == "" then return 0 end
+    if lfs.attributes(root, "mode") ~= "directory" then return 0 end
+
+    local added = 0
+    local stack = { root }
+    while #stack > 0 do
+        local dir = table.remove(stack)
+        local ok_dir, iter, dir_obj = pcall(lfs.dir, dir)
+        if ok_dir then
+            for entry in iter, dir_obj do
+                if entry ~= "." and entry ~= ".." and not M.should_skip_dir(entry) then
+                    local full = dir .. "/" .. entry
+                    local mode = lfs.attributes(full, "mode")
+                    if mode == "directory" and not entry:match("%.sdr$") then
+                        stack[#stack + 1] = full
+                    elseif mode == "file" then
+                        local ext = entry:match("%.([^.]+)$")
+                        if ext and BOOK_EXTS[ext:lower()] then
+                            local ok_b, err = pcall(function()
+                                local ds = DocSettings:open(full)
+                                local hash = ds:readSetting("partial_md5_checksum")
+                                if not hash or hash == "" then return end
+                                local doc_props = ds:readSetting("doc_props") or {}
+                                local now_ms = os.time() * 1000
+                                store:upsertBook({
+                                    hash          = hash,
+                                    title         = doc_props.title
+                                                        or entry:match("^(.+)%.[^.]+$")
+                                                        or entry,
+                                    author        = doc_props.authors,
+                                    format        = ext:upper(),
+                                    file_path     = full,
+                                    local_present = 1,
+                                    updated_at    = now_ms,
+                                    created_at    = now_ms,
+                                })
+                                added = added + 1
+                            end)
+                            if not ok_b then
+                                logger.warn("Syncest dirScan: skipped " .. full .. " — " .. tostring(err))
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    logger.info("Syncest dirScan: added=" .. added .. " from " .. root)
+    return added
+end
+
 -- ---------------------------------------------------------------------------
 -- fullSidecarWalk(opts, on_progress) — slow path; gated to first-run /
 -- explicit Rescan / 24h interval

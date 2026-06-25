@@ -528,11 +528,11 @@ function Syncest:syncBooksLibrary(mode, interactive)
         end
         return
     end
-    -- Scan local books into the store before pushing so the user doesn't
-    -- need to open the library first.
+    -- Scan all books in the home directory before pushing.
     if mode == "push" or mode == "both" then
         local localscanner = require("syncest_lib.localscanner")
-        pcall(localscanner.lightScan, { store = store })
+        local home_dir = G_reader_settings:readSetting("home_dir") or "/sdcard/Books"
+        pcall(localscanner.dirScan, { store = store, dir = home_dir })
     end
     local client = WebDavAuth:getClient(self.settings)
     local syncbooks = require("syncest_lib.syncbooks")
