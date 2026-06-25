@@ -126,7 +126,7 @@ function SyncAnnotations:getAnnotations(ui, settings, book_hash, meta_hash, full
     local annotations = ui.annotation and ui.annotation.annotations
     if not annotations then return {} end
 
-    local last_sync = full_sync and 0 or (settings.syncest_last_notes_sync_at or 0)
+    local last_sync = full_sync and 0 or (settings.last_notes_sync_at or 0)
 
     local notes = {}
     for _, item in ipairs(annotations) do
@@ -296,11 +296,13 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync)
                 end
             end
             if success then
-                settings.syncest_last_notes_sync_at = os.time() * 1000
+                settings.last_notes_sync_at = os.time() * 1000
                 G_reader_settings:saveSetting("webdav_sync", settings)
                 if ui.doc_settings then
                     local synced = ui.doc_settings:readSetting("webdav_sync") or {}
                     synced.last_pushed_at_notes = os.time()
+                    -- The server has the tombstones now; drop them so they don't
+                    -- ride along on every future push.
                     synced.deleted_notes = nil
                     ui.doc_settings:saveSetting("webdav_sync", synced)
                     ui.doc_settings:flush()
@@ -330,7 +332,7 @@ function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog
 
     client:pullChanges(
         {
-            since = full_sync and 0 or (settings.syncest_last_notes_sync_at or 0),
+            since = full_sync and 0 or (settings.last_notes_sync_at or 0),
             type = "notes",
             book = book_hash,
             meta_hash = meta_hash,
@@ -484,7 +486,7 @@ function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog
                 ::continue::
             end
 
-            settings.syncest_last_notes_sync_at = os.time() * 1000
+            settings.last_notes_sync_at = os.time() * 1000
             G_reader_settings:saveSetting("webdav_sync", settings)
             if ui.doc_settings then
                 local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
