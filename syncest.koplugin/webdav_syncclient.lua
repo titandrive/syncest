@@ -67,13 +67,12 @@ function WebDavSyncClient:_writeJSON(rel_path, data)
     if not f then return false end
     f:write(encoded)
     f:close()
-    local code = WebDavApi:uploadFile(
-        self:_url(rel_path), self.username, self.password, tmp)
+    local full_url = self:_url(rel_path)
+    local code = WebDavApi:uploadFile(full_url, self.username, self.password, tmp)
     os.remove(tmp)
     local success = type(code) == "number" and code >= 200 and code < 300
     if not success then
-        logger.warn("WebDavSyncClient _writeJSON: upload failed code=" .. tostring(code)
-            .. " path=" .. rel_path)
+        logger.warn("WebDavSyncClient _writeJSON: upload failed code=" .. tostring(code) .. " url=" .. full_url)
     end
     return success
 end
@@ -229,7 +228,12 @@ end
 
 function WebDavSyncClient:pushChanges(changes, callback)
     -- Ensure the base sync folder exists before writing anything.
-    self:_ensureFolder("")
+    local mkcol_code = WebDavApi:createFolder(self:_url(""), self.username, self.password, "")
+    if mkcol_code ~= 201 and mkcol_code ~= 405 then
+        logger.warn("WebDavSyncClient pushChanges: failed to create base folder, code=" .. tostring(mkcol_code))
+        callback(false, {}, mkcol_code)
+        return
+    end
     local ok = true
 
     -- Reading progress — last write wins per book

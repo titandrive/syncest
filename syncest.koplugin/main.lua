@@ -540,11 +540,13 @@ function Syncest:syncBooksLibrary(mode, interactive)
         client   = client,
         settings = self.settings,
         store    = store,
-    }, mode, function(success, _msg, _status)
+    }, mode, function(success, msg, _status)
         if interactive then
             UIManager:show(InfoMessage:new{
-                text = success and _("Books synced") or _("Books sync failed"),
-                timeout = 2,
+                text = success
+                    and _("Books synced")
+                    or  ("Books sync failed: " .. tostring(msg)),
+                timeout = success and 2 or 8,
             })
         end
         local LibraryWidget = require("syncest_lib.librarywidget")
