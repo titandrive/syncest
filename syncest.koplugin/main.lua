@@ -32,6 +32,7 @@ Syncest.default_settings = {
     auto_push_stats          = true,
     auto_pull_stats          = true,
     auto_sync_catalog        = true,
+    mirror_to_kosync         = false,
     user_id      = nil,
     user_name    = nil,
     last_sync_at = nil,
@@ -341,6 +342,15 @@ function Syncest:addToMainMenu(menu_items)
                 separator = true,
             },
             {
+                text = _("Mirror progress to KOSync"),
+                checked_func = function() return self.settings.mirror_to_kosync end,
+                callback = function()
+                    self.settings.mirror_to_kosync = not self.settings.mirror_to_kosync
+                    G_reader_settings:saveSetting("webdav_sync", self.settings)
+                end,
+                separator = true,
+            },
+            {
                 text = _("Syncest Library"),
                 enabled_func = function()
                     return not WebDavAuth:needsSetup(self.settings)
@@ -497,6 +507,9 @@ function Syncest:pushBookConfig(interactive)
     if not client then return end
     self.last_sync_timestamp = SyncConfig:push(
         self.ui, self.settings, client, interactive, self.last_sync_timestamp)
+    if self.settings.mirror_to_kosync and self.ui.kosync then
+        self.ui.kosync:pushProgress()
+    end
 end
 
 function Syncest:pullBookConfig(interactive)
