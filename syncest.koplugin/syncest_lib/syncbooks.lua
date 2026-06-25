@@ -239,10 +239,11 @@ function M.pullBooks(opts, cb)
         return
     end
 
-    local since = opts.store:getLastPulledAt() or 0
-    logger.info("WebDavSync pullBooks: since=" .. since)
+    -- Always fetch the full cloud library (since=0) so the Syncest Library
+    -- always reflects exactly what's in WebDAV regardless of push watermarks.
+    logger.info("WebDavSync pullBooks: full cloud fetch")
 
-    client:pullBooks({since = since}, function(success, body, _)
+    client:pullBooks({since = 0}, function(success, body, _)
         if not success then
             if cb then cb(false, "pull failed") end
             return

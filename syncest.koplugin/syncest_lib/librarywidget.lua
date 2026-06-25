@@ -781,29 +781,33 @@ function M.handleTap(item, opts)
     local lfs = require("libs/libkoreader-lfs")
 
     if row.local_present == 1 and row.file_path then
-        -- Tap-time recovery: maybe the file vanished since the last scan
+        -- Tap-time recovery: file vanished from device
         if lfs.attributes(row.file_path, "mode") ~= "file" then
-            local ConfirmBox = require("ui/widget/confirmbox")
-            UIManager:show(ConfirmBox:new{
-                text = _("File moved or deleted. Rescan library?"),
-                ok_callback = function()
-                    Trapper:wrap(function()
-                        localscanner.fullSidecarWalk({
-                            store    = M._store,
-                            home_dir = G_reader_settings:readSetting("home_dir"),
-                        })
-                        M.refresh()
-                    end)
-                end,
-            })
+            -- If it's in the cloud, offer download instead of rescan
+            if row.cloud_present ~= 1 then
+                local ConfirmBox = require("ui/widget/confirmbox")
+                UIManager:show(ConfirmBox:new{
+                    text = _("File moved or deleted. Rescan library?"),
+                    ok_callback = function()
+                        Trapper:wrap(function()
+                            localscanner.fullSidecarWalk({
+                                store    = M._store,
+                                home_dir = G_reader_settings:readSetting("home_dir"),
+                            })
+                            M.refresh()
+                        end)
+                    end,
+                })
+                return
+            end
+            -- cloud_present=1 — fall through to download path below
+        else
+            -- File exists locally — open it
+            local ReaderUI = require("apps/reader/readerui")
+            M.close()
+            ReaderUI:showReader(row.file_path)
             return
         end
-        -- Close the Library before handing off to the reader so it isn't
-        -- left in the widget stack underneath — see M.close().
-        local ReaderUI = require("apps/reader/readerui")
-        M.close()
-        ReaderUI:showReader(row.file_path)
-        return
     end
 
     -- Cloud-only path: confirm + download + open
