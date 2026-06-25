@@ -167,6 +167,30 @@ function M.pushChangedBooks(opts, cb)
                 if cb then cb(false, "push failed (HTTP " .. tostring(status) .. ")") end
                 return
             end
+
+            -- Upload actual book files to books/{hash}/{hash}.ext
+            local DataStorage = require("datastorage")
+            local covers_dir = DataStorage:getSettingsDir() .. "/syncest_covers"
+            local uploaded, failed = 0, 0
+            for _, row in ipairs(changed) do
+                if row.file_path and row.format then
+                    local ok_up, err_up = pcall(M.uploadBook, row, {
+                        client     = opts.client,
+                        settings   = opts.settings,
+                        covers_dir = covers_dir,
+                    }, nil)
+                    if ok_up then
+                        uploaded = uploaded + 1
+                        -- Set uploadedAt so the cloud library shows the file is available
+                        row_to_wire(row).uploadedAt = os.time() * 1000
+                    else
+                        failed = failed + 1
+                        logger.warn("Syncest uploadBook failed: " .. tostring(err_up))
+                    end
+                end
+            end
+            logger.info("Syncest pushChangedBooks: uploaded=" .. uploaded .. " failed=" .. failed)
+
             -- Mark pushed rows as cloud_present so they appear in the library view.
             for _, row in ipairs(changed) do
                 store:upsertBook({ hash = row.hash, title = row.title, cloud_present = 1 })
