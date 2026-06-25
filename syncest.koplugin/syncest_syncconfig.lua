@@ -171,7 +171,7 @@ function SyncConfig:showSyncedMessage()
     })
 end
 
-function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp)
+function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp, notify_fn)
     local config = self:getCurrentBookConfig(ui)
     if not config then return last_sync_timestamp end
 
@@ -209,6 +209,7 @@ function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp)
                 doc_readest_sync.last_pushed_at_config = os.time()
                 ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
                 ui.doc_settings:flush()
+                if notify_fn then notify_fn("progress") end
             end
         end
     )

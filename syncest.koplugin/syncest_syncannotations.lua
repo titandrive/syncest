@@ -237,7 +237,7 @@ function SyncAnnotations:recordDeletion(doc_settings, item)
     doc_settings:flush()
 end
 
-function SyncAnnotations:push(ui, settings, client, interactive, full_sync)
+function SyncAnnotations:push(ui, settings, client, interactive, full_sync, notify_fn)
     local book_hash = ui.doc_settings:readSetting("partial_md5_checksum")
     local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
     local meta_hash = doc_readest_sync.meta_hash_v1
@@ -308,6 +308,7 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync)
                     ui.doc_settings:saveSetting("webdav_sync", synced)
                     ui.doc_settings:flush()
                 end
+                if notify_fn then notify_fn("annotations") end
             end
         end
     )

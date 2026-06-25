@@ -85,7 +85,7 @@ function SyncStats:applyRemote(books, pages)
     conn:close()
 end
 
-function SyncStats:push(settings, client, interactive)
+function SyncStats:push(settings, client, interactive, notify_fn)
     -- `settings` is the plain readest_sync data table (see main.lua:init), so
     -- the cursor is a field; persist by saving the whole table back to
     -- G_reader_settings, mirroring readest_syncauth.
@@ -122,6 +122,7 @@ function SyncStats:push(settings, client, interactive)
                 if interactive then
                     UIManager:show(InfoMessage:new{ text = _("Reading statistics pushed"), timeout = 2 })
                 end
+                if notify_fn then notify_fn("stats") end
             else
                 logger.dbg("ReadestStats push: failed, cursor unchanged; body=" .. tostring(body))
                 if interactive then

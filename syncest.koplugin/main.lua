@@ -40,6 +40,26 @@ Syncest.default_settings = {
 
 -- ── Lifecycle ──────────────────────────────────────────────────────
 
+function Syncest:_autoNotify(label)
+    if not self._notify_labels then self._notify_labels = {} end
+    self._notify_labels[label] = true
+    if self._notify_task then UIManager:unschedule(self._notify_task) end
+    self._notify_task = function()
+        local order = { "progress", "annotations", "stats" }
+        local parts = {}
+        for _, k in ipairs(order) do
+            if self._notify_labels[k] then parts[#parts + 1] = k end
+        end
+        UIManager:show(InfoMessage:new{
+            text = table.concat(parts, ", ") .. " synced",
+            timeout = 2,
+        })
+        self._notify_labels = nil
+        self._notify_task = nil
+    end
+    UIManager:scheduleIn(2, self._notify_task)
+end
+
 function Syncest:init()
     self.last_sync_timestamp = 0
     self.settings = G_reader_settings:readSetting("webdav_sync", self.default_settings)
@@ -515,8 +535,9 @@ function Syncest:pushBookConfig(interactive)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
+    local notify_fn = not interactive and function(l) self:_autoNotify(l) end or nil
     self.last_sync_timestamp = SyncConfig:push(
-        self.ui, self.settings, client, interactive, self.last_sync_timestamp)
+        self.ui, self.settings, client, interactive, self.last_sync_timestamp, notify_fn)
     if self.settings.mirror_to_kosync and self.ui.kosync then
         pcall(function() self.ui.kosync:updateProgress(true, false) end)
     end
@@ -544,7 +565,8 @@ function Syncest:pushBookStats(interactive)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    SyncStats:push(self.settings, client, interactive)
+    local notify_fn = not interactive and function(l) self:_autoNotify(l) end or nil
+    SyncStats:push(self.settings, client, interactive, notify_fn)
 end
 
 function Syncest:pullBookStats(interactive)
@@ -566,7 +588,8 @@ function Syncest:pushBookNotes(interactive, full_sync)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    SyncAnnotations:push(self.ui, self.settings, client, interactive, full_sync)
+    local notify_fn = not interactive and function(l) self:_autoNotify(l) end or nil
+    SyncAnnotations:push(self.ui, self.settings, client, interactive, full_sync, notify_fn)
 end
 
 function Syncest:pullBookNotes(interactive, full_sync)
