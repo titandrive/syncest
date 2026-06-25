@@ -132,7 +132,7 @@ function SyncStats:push(settings, client, interactive, notify_fn)
         end)
 end
 
-function SyncStats:pull(settings, client, interactive, logout_fn)
+function SyncStats:pull(settings, client, interactive, logout_fn, notify_fn)
     local since = settings.stats_pull_cursor or 0
     logger.dbg("ReadestStats pull: since=" .. tostring(since)
         .. " interactive=" .. tostring(interactive))
@@ -172,6 +172,7 @@ function SyncStats:pull(settings, client, interactive, logout_fn)
                     or _("Reading statistics are up to date")
                 UIManager:show(InfoMessage:new{ text = text, timeout = 2 })
             end
+            if notify_fn then notify_fn("stats") end
         end)
 end
 

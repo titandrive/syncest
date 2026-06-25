@@ -314,7 +314,7 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
     )
 end
 
-function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog, interactive, full_sync)
+function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog, interactive, full_sync, notify_fn)
     if ui.document.info.has_pages then
         if interactive then
             UIManager:show(InfoMessage:new{
@@ -507,6 +507,7 @@ function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog
             if added > 0 or removed > 0 then
                 UIManager:setDirty(dialog, "ui")
             end
+            if notify_fn then notify_fn("annotations") end
         end
     )
 end

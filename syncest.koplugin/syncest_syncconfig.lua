@@ -220,7 +220,7 @@ function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp,
     return last_sync_timestamp
 end
 
-function SyncConfig:pull(ui, settings, client, book_hash, meta_hash, interactive, logout_fn)
+function SyncConfig:pull(ui, settings, client, book_hash, meta_hash, interactive, logout_fn, notify_fn)
     if interactive then
         UIManager:show(InfoMessage:new{
             text = _("Pulling reading progress..."),
@@ -268,6 +268,7 @@ function SyncConfig:pull(ui, settings, client, book_hash, meta_hash, interactive
                 ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
                 ui.doc_settings:flush()
             end
+            if notify_fn then notify_fn("progress") end
 
             local data = response.configs
             if data and #data > 0 then

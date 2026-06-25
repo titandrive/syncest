@@ -125,13 +125,13 @@ function Syncest:onReaderReady()
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
         UIManager:nextTick(function()
             if self.settings.auto_pull_progress ~= false then
-                self:pullBookConfig(false)
+                self:pullBookConfig(false, true)
             end
             if self.settings.auto_pull_annotations ~= false then
-                self:pullBookNotes(false)
+                self:pullBookNotes(false, false, true)
             end
             if self.settings.auto_pull_stats ~= false then
-                self:pullBookStats(false)
+                self:pullBookStats(false, true)
             end
         end)
     end
@@ -544,7 +544,7 @@ function Syncest:pushBookConfig(interactive, notify)
     end
 end
 
-function Syncest:pullBookConfig(interactive)
+function Syncest:pullBookConfig(interactive, notify)
     local book_hash, meta_hash = self:getBookIdentifiers()
     if not book_hash or not meta_hash then return end
     if NetworkMgr:willRerunWhenOnline(
@@ -553,8 +553,9 @@ function Syncest:pullBookConfig(interactive)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
+    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
     SyncConfig:pull(self.ui, self.settings, client, book_hash, meta_hash,
-        interactive, function() end)
+        interactive, function() end, notify_fn)
 end
 
 -- ── Stats sync ─────────────────────────────────────────────────────
@@ -570,14 +571,15 @@ function Syncest:pushBookStats(interactive, notify)
     SyncStats:push(self.settings, client, interactive, notify_fn)
 end
 
-function Syncest:pullBookStats(interactive)
+function Syncest:pullBookStats(interactive, notify)
     if NetworkMgr:willRerunWhenOnline(
             function() self:pullBookStats(interactive) end) then
         return
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    SyncStats:pull(self.settings, client, interactive, function() end)
+    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
+    SyncStats:pull(self.settings, client, interactive, function() end, notify_fn)
 end
 
 -- ── Annotation sync ────────────────────────────────────────────────
@@ -593,7 +595,7 @@ function Syncest:pushBookNotes(interactive, full_sync, notify)
     SyncAnnotations:push(self.ui, self.settings, client, interactive, full_sync, notify_fn)
 end
 
-function Syncest:pullBookNotes(interactive, full_sync)
+function Syncest:pullBookNotes(interactive, full_sync, notify)
     local book_hash, meta_hash = self:getBookIdentifiers()
     if not book_hash or not meta_hash then return end
     if NetworkMgr:willRerunWhenOnline(
@@ -602,8 +604,9 @@ function Syncest:pullBookNotes(interactive, full_sync)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
+    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
     SyncAnnotations:pull(self.ui, self.settings, client, book_hash, meta_hash,
-        self.dialog, interactive, full_sync)
+        self.dialog, interactive, full_sync, notify_fn)
 end
 
 function Syncest:fullSyncBookNotes()
