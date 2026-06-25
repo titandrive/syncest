@@ -22,14 +22,11 @@ local Syncest = WidgetContainer:new{
 local API_CALL_DEBOUNCE_DELAY = 30
 
 Syncest.default_settings = {
-    webdav_address  = nil,
-    webdav_username = nil,
-    webdav_password = nil,
-    webdav_base_path = "koreader-sync",
-    auto_sync       = false,
-    user_id         = nil,
-    user_name       = nil,
-    last_sync_at    = nil,
+    sync_server  = nil,
+    auto_sync    = false,
+    user_id      = nil,
+    user_name    = nil,
+    last_sync_at = nil,
 }
 
 -- ── Lifecycle ──────────────────────────────────────────────────────

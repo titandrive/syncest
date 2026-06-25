@@ -10,21 +10,22 @@ local ltn12 = require("ltn12")
 local WebDavSyncClient = {}
 
 function WebDavSyncClient:new(o)
-    o = o or {}
-    setmetatable(o, self)
-    self.__index = self
-    return o
+    local t = setmetatable({}, { __index = self })
+    t.server   = o.server
+    t.username = o.server.username or ""
+    t.password = o.server.password or ""
+    return t
 end
 
 -- ── URL helpers ────────────────────────────────────────────────────
 
 function WebDavSyncClient:_url(rel_path)
-    local base = self.address:gsub("/$", "")
-    local bp = (self.base_path or "koreader-sync"):gsub("^/", ""):gsub("/$", "")
+    local base = WebDavApi:getJoinedPath(
+        self.server.address, self.server.url or "")
     if rel_path and rel_path ~= "" then
-        return base .. "/" .. bp .. "/" .. rel_path:gsub("^/", "")
+        return WebDavApi:getJoinedPath(base, rel_path)
     end
-    return base .. "/" .. bp .. "/"
+    return base
 end
 
 local function tmp_path()
