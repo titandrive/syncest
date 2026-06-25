@@ -281,9 +281,11 @@ end
 -- so the library only shows what actually comes back from WebDAV.
 -- ---------------------------------------------------------------------------
 function M:clearCloudPresent()
-    self.db:exec(string.format(
-        "UPDATE books SET cloud_present = 0 WHERE user_id = %q",
-        self.user_id))
+    local stmt = self.db:prepare(
+        "UPDATE books SET cloud_present = 0 WHERE user_id = ?")
+    stmt:reset():bind(self.user_id)
+    stmt:step()
+    stmt:close()
 end
 
 -- ---------------------------------------------------------------------------
