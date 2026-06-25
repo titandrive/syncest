@@ -145,9 +145,9 @@ function M.pushChangedBooks(opts, cb)
 
     local since   = store:getLastPulledAt() or 0
     local changed = store:getChangedBooks(since)
+    logger.info("WebDavSync pushChangedBooks: since=" .. since .. " found=" .. #changed)
     if #changed == 0 then
-        logger.info("WebDavSync pushChangedBooks: nothing to push (since=" .. since .. ")")
-        if cb then cb(true, 0) end
+        if cb then cb(false, "no books found to push — books may not have been opened in KOReader yet (no hash)") end
         return
     end
 
@@ -162,9 +162,9 @@ function M.pushChangedBooks(opts, cb)
     logger.info("WebDavSync pushChangedBooks: pushing " .. #books_wire .. " row(s)")
     client:pushChanges(
         {books = books_wire, notes = {}, configs = {}},
-        function(success, _, _)
+        function(success, _, status)
             if not success then
-                if cb then cb(false, "push failed") end
+                if cb then cb(false, "push failed (HTTP " .. tostring(status) .. ")") end
                 return
             end
             -- Mark pushed rows as cloud_present so they appear in the library view.

@@ -228,6 +228,8 @@ function WebDavSyncClient:pullChanges(params, callback)
 end
 
 function WebDavSyncClient:pushChanges(changes, callback)
+    -- Ensure the base sync folder exists before writing anything.
+    self:_ensureFolder("")
     local ok = true
 
     -- Reading progress — last write wins per book
