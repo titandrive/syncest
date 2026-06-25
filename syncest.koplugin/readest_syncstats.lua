@@ -116,6 +116,7 @@ function SyncStats:push(settings, client, interactive)
                 .. " status=" .. tostring(status))
             if success then
                 settings.stats_push_cursor = max_start
+                settings.stats_last_pushed_at = os.time()
                 G_reader_settings:saveSetting("webdav_sync", settings)
                 logger.dbg("ReadestStats push: cursor advanced to " .. tostring(max_start))
                 if interactive then

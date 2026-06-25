@@ -454,22 +454,26 @@ function Syncest:showSyncInfo()
     end
     local info = SyncConfig:getMetadataHashInfo(self.ui)
     local doc_sync = self.ui.doc_settings:readSetting("webdav_sync") or {}
-    local stored_meta_hash = doc_sync.meta_hash_v1
+    local gs = G_reader_settings:readSetting("webdav_sync") or {}
     local placeholder = _("(none)")
-    local last_synced_at = math.max(
-        doc_sync.last_synced_at_config or 0,
-        doc_sync.last_synced_at_notes  or 0)
-    local last_synced_label = last_synced_at > 0
-        and os.date("%Y-%m-%d %H:%M", last_synced_at)
-        or _("Never synced")
+    local never = _("Never")
+    local function fmt(ts)
+        return (ts and ts > 0) and os.date("%Y-%m-%d %H:%M", ts) or never
+    end
     local kv_pairs = {
-        { _("Book Fingerprint"), stored_meta_hash or info.meta_hash },
-        { _("Title"), info.title ~= "" and info.title or placeholder },
-        { _("Author"), #info.authors > 0
-            and table.concat(info.authors, ", ") or placeholder },
-        { _("Identifiers"), #info.identifiers > 0
-            and table.concat(info.identifiers, ", ") or placeholder },
-        { _("Last Synced"), last_synced_label },
+        { _("Book Fingerprint"), doc_sync.meta_hash_v1 or info.meta_hash or placeholder },
+        { _("Title"),  info.title ~= "" and info.title or placeholder },
+        { _("Author"), #info.authors > 0 and table.concat(info.authors, ", ") or placeholder },
+        { _("─── Progress ───"), "" },
+        { _("  Last pushed"), fmt(doc_sync.last_pushed_at_config) },
+        { _("  Last pulled"), fmt(doc_sync.last_synced_at_config) },
+        { _("─── Annotations ───"), "" },
+        { _("  Last pushed"), fmt(doc_sync.last_pushed_at_notes) },
+        { _("  Last pulled"), fmt(doc_sync.last_synced_at_notes) },
+        { _("─── Stats ───"), "" },
+        { _("  Last pushed"), fmt(gs.stats_last_pushed_at) },
+        { _("─── Catalog ───"), "" },
+        { _("  Last pushed"), fmt(gs.catalog_last_pushed_at) },
     }
     UIManager:show(KeyValuePage:new{ title = _("Sync Info"), kv_pairs = kv_pairs })
 end
@@ -638,6 +642,10 @@ function Syncest:syncBooksLibrary(mode, interactive)
         settings = self.settings,
         store    = store,
     }, mode, function(success, msg, _status)
+        if success and (mode == "push" or mode == "both") then
+            self.settings.catalog_last_pushed_at = os.time()
+            G_reader_settings:saveSetting("webdav_sync", self.settings)
+        end
         if interactive then
             UIManager:show(InfoMessage:new{
                 text = success

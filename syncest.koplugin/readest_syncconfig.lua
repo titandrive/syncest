@@ -206,8 +206,9 @@ function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp)
             end
             if success and ui.doc_settings then
                 local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
-                doc_readest_sync.last_synced_at_config = os.time()
+                doc_readest_sync.last_pushed_at_config = os.time()
                 ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
+                ui.doc_settings:flush()
             end
         end
     )
@@ -264,6 +265,7 @@ function SyncConfig:pull(ui, settings, client, book_hash, meta_hash, interactive
                 local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
                 doc_readest_sync.last_synced_at_config = os.time()
                 ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
+                ui.doc_settings:flush()
             end
 
             local data = response.configs

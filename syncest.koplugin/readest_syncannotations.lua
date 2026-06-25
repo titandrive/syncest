@@ -300,11 +300,12 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync)
                 G_reader_settings:saveSetting("webdav_sync", settings)
                 if ui.doc_settings then
                     local synced = ui.doc_settings:readSetting("webdav_sync") or {}
-                    synced.last_synced_at_notes = os.time()
+                    synced.last_pushed_at_notes = os.time()
                     -- The server has the tombstones now; drop them so they don't
                     -- ride along on every future push.
                     synced.deleted_notes = nil
                     ui.doc_settings:saveSetting("webdav_sync", synced)
+                    ui.doc_settings:flush()
                 end
             end
         end
@@ -491,6 +492,7 @@ function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog
                 local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
                 doc_readest_sync.last_synced_at_notes = os.time()
                 ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
+                ui.doc_settings:flush()
             end
 
             if interactive then
