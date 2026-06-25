@@ -525,7 +525,7 @@ end
 
 -- ── Config sync ────────────────────────────────────────────────────
 
-function Syncest:pushBookConfig(interactive)
+function Syncest:pushBookConfig(interactive, notify)
     local now = os.time()
     if not interactive and now - self.last_sync_timestamp <= API_CALL_DEBOUNCE_DELAY then
         return
@@ -536,7 +536,7 @@ function Syncest:pushBookConfig(interactive)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    local notify_fn = not interactive and function(l) self:_autoNotify(l) end or nil
+    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
     self.last_sync_timestamp = SyncConfig:push(
         self.ui, self.settings, client, interactive, self.last_sync_timestamp, notify_fn)
     if self.settings.mirror_to_kosync and self.ui.kosync then
@@ -559,14 +559,14 @@ end
 
 -- ── Stats sync ─────────────────────────────────────────────────────
 
-function Syncest:pushBookStats(interactive)
+function Syncest:pushBookStats(interactive, notify)
     if interactive and NetworkMgr:willRerunWhenOnline(
             function() self:pushBookStats(interactive) end) then
         return
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    local notify_fn = not interactive and function(l) self:_autoNotify(l) end or nil
+    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
     SyncStats:push(self.settings, client, interactive, notify_fn)
 end
 
@@ -582,14 +582,14 @@ end
 
 -- ── Annotation sync ────────────────────────────────────────────────
 
-function Syncest:pushBookNotes(interactive, full_sync)
+function Syncest:pushBookNotes(interactive, full_sync, notify)
     if interactive and NetworkMgr:willRerunWhenOnline(
             function() self:pushBookNotes(interactive, full_sync) end) then
         return
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    local notify_fn = not interactive and function(l) self:_autoNotify(l) end or nil
+    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
     SyncAnnotations:push(self.ui, self.settings, client, interactive, full_sync, notify_fn)
 end
 
@@ -735,13 +735,13 @@ function Syncest:onCloseDocument()
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
         NetworkMgr:goOnlineToRun(function()
             if self.settings.auto_push_progress ~= false then
-                self:pushBookConfig(false)
+                self:pushBookConfig(false, true)
             end
             if self.settings.auto_push_annotations ~= false then
-                self:pushBookNotes(false)
+                self:pushBookNotes(false, false, true)
             end
             if self.settings.auto_push_stats ~= false then
-                self:pushBookStats(false)
+                self:pushBookStats(false, true)
             end
             if self.settings.auto_sync_catalog ~= false then
                 self:syncBooksLibrary("both", false)
@@ -770,7 +770,7 @@ function Syncest:onAnnotationsModified(items)
     end
     if self.settings.auto_sync and self.settings.auto_push_annotations ~= false
             and not WebDavAuth:needsSetup(self.settings) then
-        UIManager:nextTick(function() self:pushBookNotes(false) end)
+        UIManager:nextTick(function() self:pushBookNotes(false, false, true) end)
     end
 end
 
