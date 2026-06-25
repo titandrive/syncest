@@ -399,7 +399,7 @@ function Syncest:addToMainMenu(menu_items)
                     return not WebDavAuth:needsSetup(self.settings)
                         and self.ui.document ~= nil
                 end,
-                callback = function() self:pushBookNotes(true) end,
+                callback = function() self:pushBookNotes(true, true) end,
             },
             {
                 text = _("Pull annotations now"),
