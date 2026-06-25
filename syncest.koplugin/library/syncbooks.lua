@@ -82,13 +82,12 @@ M._row_to_wire = row_to_wire
 -- Returns the WebDavApi module and base URL components from opts.settings.
 local function webdav(opts)
     local WebDavApi = require("apps/cloudstorage/webdavapi")
-    local s = opts.settings
-    local base = (s.webdav_address or ""):gsub("/$", "")
-    local bp   = (s.webdav_base_path or "koreader-sync"):gsub("^/", ""):gsub("/$", "")
+    local srv = opts.settings.sync_server or {}
+    local base = WebDavApi:getJoinedPath(srv.address or "", srv.url or "")
     local function url(rel)
-        return base .. "/" .. bp .. "/" .. rel:gsub("^/", "")
+        return WebDavApi:getJoinedPath(base, rel)
     end
-    return WebDavApi, url, s.webdav_username or "", s.webdav_password or ""
+    return WebDavApi, url, srv.username or "", srv.password or ""
 end
 
 -- MKCOL tolerating 405 (already exists).
