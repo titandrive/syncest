@@ -351,7 +351,7 @@ end
 -- active, surface it so the user can see why their library "looks empty".
 -- ---------------------------------------------------------------------------
 local function title_for(search)
-    local title = _("Readest Library")
+    local title = _("Syncest Library")
     if M._group_path then
         title = title .. ": " .. M._group_path
     end
@@ -543,17 +543,8 @@ local function runOpenSync(opts, store, menu)
             .. tostring(opts.settings.user_id and opts.settings.user_id:sub(1, 8))
             .. " auto_sync=" .. tostring(opts.settings.auto_sync))
 
-        -- 1. Light local scan (cheap, synchronous). Always refresh after,
-        -- regardless of pull outcome below — otherwise local-only books
-        -- (the common case for a freshly-installed plugin where nothing
-        -- has been uploaded to Readest cloud yet) would never appear in
-        -- the menu, since the initial item_table was built from the
-        -- pre-scan store snapshot.
-        local ok, err = pcall(localscanner.lightScan, { store = store })
-        if not ok then logger.warn("ReadestLibrary lightScan failed:", err) end
-        M.refresh()
-
-        -- 2. Cloud sync — deferred so the menu paints first.
+        -- Cloud pull only — library shows what's in the cloud, not local books.
+        -- Local scanning happens on push, not on open.
         -- willRerunWhenOnline + the inline call moved into the
         -- scheduled handler so the offline→online and already-online
         -- branches share one code path.
@@ -576,6 +567,17 @@ end
 -- opts: { settings = G_reader_settings.readest_sync, sync_path, sync_auth }
 -- ---------------------------------------------------------------------------
 function M.open(opts, internal)
+    local ok, err = pcall(M._open, opts, internal)
+    if not ok then
+        logger.err("Syncest Library open failed:", err)
+        UIManager:show(InfoMessage:new{
+            text = "Syncest Library error:\n" .. tostring(err),
+            timeout = 10,
+        })
+    end
+end
+
+function M._open(opts, internal)
     local can_open, reason = M.canOpen(opts.settings)
     if not can_open then
         UIManager:show(InfoMessage:new{ text = reason, timeout = 3 })

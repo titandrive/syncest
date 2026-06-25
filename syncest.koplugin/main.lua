@@ -528,6 +528,12 @@ function Syncest:syncBooksLibrary(mode, interactive)
         end
         return
     end
+    -- Scan local books into the store before pushing so the user doesn't
+    -- need to open the library first.
+    if mode == "push" or mode == "both" then
+        local localscanner = require("library.localscanner")
+        pcall(localscanner.lightScan, { store = store })
+    end
     local client = WebDavAuth:getClient(self.settings)
     local syncbooks = require("library.syncbooks")
     syncbooks.syncBooks({
