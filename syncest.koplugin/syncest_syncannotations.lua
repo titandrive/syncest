@@ -183,7 +183,7 @@ function SyncAnnotations:removeDeletedAnnotations(annotation_mgr, notes, book_ha
 
     local to_remove = {}
     for _, note in ipairs(notes) do
-        if note.deleted_at then
+        if note.deletedAt or note.deleted_at then
             local idx
             if note.id and index_by_id[note.id] then
                 idx = index_by_id[note.id]
@@ -234,6 +234,7 @@ function SyncAnnotations:recordDeletion(doc_settings, item)
     deleted[#deleted + 1] = note
     doc_readest_sync.deleted_notes = deleted
     doc_settings:saveSetting("webdav_sync", doc_readest_sync)
+    doc_settings:flush()
 end
 
 function SyncAnnotations:push(ui, settings, client, interactive, full_sync)
@@ -407,7 +408,7 @@ function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog
 
             local added = 0
             for _, note in ipairs(data) do
-                if note.deleted_at then
+                if note.deletedAt or note.deleted_at then
                     goto continue
                 end
 
