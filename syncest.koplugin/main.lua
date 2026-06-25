@@ -261,6 +261,19 @@ function Syncest:addToMainMenu(menu_items)
                 text = _("Sync settings"),
                 sub_item_table = {
                     {
+                        text = _("Mirror progress to KOSync"),
+                        checked_func = function() return self.settings.mirror_to_kosync end,
+                        callback = function()
+                            self.settings.mirror_to_kosync = not self.settings.mirror_to_kosync
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                        separator = true,
+                    },
+                    {
+                        text = _("AUTO SYNC"),
+                        enabled_func = function() return false end,
+                    },
+                    {
                         text = _("Push reading progress on page turn"),
                         enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
@@ -341,14 +354,6 @@ function Syncest:addToMainMenu(menu_items)
                         callback = function()
                             self.settings.auto_sync_catalog =
                                 self.settings.auto_sync_catalog == false
-                            G_reader_settings:saveSetting("webdav_sync", self.settings)
-                        end,
-                    },
-                    {
-                        text = _("Mirror progress to KOSync"),
-                        checked_func = function() return self.settings.mirror_to_kosync end,
-                        callback = function()
-                            self.settings.mirror_to_kosync = not self.settings.mirror_to_kosync
                             G_reader_settings:saveSetting("webdav_sync", self.settings)
                         end,
                     },
