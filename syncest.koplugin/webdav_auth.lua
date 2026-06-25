@@ -27,7 +27,10 @@ end
 
 -- Returns the list of WebDAV accounts from KOReader's cloud storage settings.
 function WebDavAuth:getWebDavAccounts()
-    local cs = G_reader_settings:readSetting("cs_servers") or {}
+    local LuaSettings  = require("luasettings")
+    local DataStorage  = require("datastorage")
+    local cs = LuaSettings:open(DataStorage:getSettingsDir() .. "/cloudstorage.lua")
+                          :readSetting("cs_servers") or {}
     local accounts = {}
     for _, item in ipairs(cs) do
         if item.type == "webdav" then
