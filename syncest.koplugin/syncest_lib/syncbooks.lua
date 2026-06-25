@@ -169,7 +169,7 @@ function M.pushChangedBooks(opts, cb)
             end
             -- Mark pushed rows as cloud_present so they appear in the library view.
             for _, row in ipairs(changed) do
-                store:upsertBook({ hash = row.hash, cloud_present = 1 })
+                store:upsertBook({ hash = row.hash, title = row.title, cloud_present = 1 })
             end
             store:setLastPulledAt(max_ts)
             if cb then cb(true, #books_wire) end

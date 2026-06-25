@@ -148,6 +148,7 @@ function M.lightScan(opts)
                     return
                 end
                 local doc_props = doc_settings:readSetting("doc_props") or {}
+                local now_ms = os.time() * 1000
                 store:upsertBook({
                     hash         = hash,
                     title        = doc_props.title
@@ -158,6 +159,8 @@ function M.lightScan(opts)
                     file_path    = file,
                     local_present = 1,
                     last_read_at = item.time and (item.time * 1000) or nil,
+                    updated_at   = now_ms,
+                    created_at   = now_ms,
                 })
                 added = added + 1
             end)
