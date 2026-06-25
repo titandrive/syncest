@@ -301,8 +301,6 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync)
                 if ui.doc_settings then
                     local synced = ui.doc_settings:readSetting("webdav_sync") or {}
                     synced.last_pushed_at_notes = os.time()
-                    -- The server has the tombstones now; drop them so they don't
-                    -- ride along on every future push.
                     synced.deleted_notes = nil
                     ui.doc_settings:saveSetting("webdav_sync", synced)
                     ui.doc_settings:flush()

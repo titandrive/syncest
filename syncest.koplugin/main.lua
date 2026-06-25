@@ -460,20 +460,24 @@ function Syncest:showSyncInfo()
     local function fmt(ts)
         return (ts and ts > 0) and os.date("%Y-%m-%d %H:%M", ts) or never
     end
+    local function max_ts(...)
+        local m = 0
+        for _, v in ipairs({...}) do
+            local n = tonumber(v) or 0
+            if n > m then m = n end
+        end
+        return m > 0 and m or nil
+    end
     local kv_pairs = {
         { _("Book Fingerprint"), doc_sync.meta_hash_v1 or info.meta_hash or placeholder },
         { _("Title"),  info.title ~= "" and info.title or placeholder },
         { _("Author"), #info.authors > 0 and table.concat(info.authors, ", ") or placeholder },
-        { _("─── Progress ───"), "" },
-        { _("  Last pushed"), fmt(doc_sync.last_pushed_at_config) },
-        { _("  Last pulled"), fmt(doc_sync.last_synced_at_config) },
-        { _("─── Annotations ───"), "" },
-        { _("  Last pushed"), fmt(doc_sync.last_pushed_at_notes) },
-        { _("  Last pulled"), fmt(doc_sync.last_synced_at_notes) },
-        { _("─── Stats ───"), "" },
-        { _("  Last pushed"), fmt(gs.stats_last_pushed_at) },
-        { _("─── Catalog ───"), "" },
-        { _("  Last pushed"), fmt(gs.catalog_last_pushed_at) },
+        { _("Progress pushed"),    fmt(max_ts(doc_sync.last_pushed_at_config)) },
+        { _("Progress pulled"),    fmt(max_ts(doc_sync.last_synced_at_config)) },
+        { _("Annotations pushed"), fmt(max_ts(doc_sync.last_pushed_at_notes)) },
+        { _("Annotations pulled"), fmt(max_ts(doc_sync.last_synced_at_notes)) },
+        { _("Stats pushed"),       fmt(gs.stats_last_pushed_at) },
+        { _("Catalog pushed"),     fmt(gs.catalog_last_pushed_at) },
     }
     UIManager:show(KeyValuePage:new{ title = _("Sync Info"), kv_pairs = kv_pairs })
 end
