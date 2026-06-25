@@ -545,20 +545,16 @@ local function runOpenSync(opts, store, menu)
             .. tostring(opts.settings.user_id and opts.settings.user_id:sub(1, 8))
             .. " auto_sync=" .. tostring(opts.settings.auto_sync))
 
-        -- Cloud pull only — library shows what's in the cloud, not local books.
-        -- Local scanning happens on push, not on open.
-        -- willRerunWhenOnline + the inline call moved into the
-        -- scheduled handler so the offline→online and already-online
-        -- branches share one code path.
-        local since = store:getLastPulledAt() or 0
-        logger.info("ReadestLibrary runOpenSync: since=" .. tostring(since)
-            .. ", scheduling cloud sync in " .. SYNC_DEFER_SECONDS .. "s")
+        -- Clear cloud_present so the library starts empty and shows ONLY what
+        -- comes back from the WebDAV pull. This makes the library a true cloud
+        -- view: delete books from the cloud and they disappear here.
+        store:clearCloudPresent()
+        M.refresh()
+
         UIManager:scheduleIn(SYNC_DEFER_SECONDS, function()
             if NetworkMgr:willRerunWhenOnline(function() runCloudSync(opts, store) end) then
-                logger.info("ReadestLibrary runOpenSync: sync deferred until network online")
                 return
             end
-            logger.info("ReadestLibrary runOpenSync: network online, dispatching sync")
             runCloudSync(opts, store)
         end)
     end)

@@ -277,6 +277,16 @@ function M:upsertBook(row)
 end
 
 -- ---------------------------------------------------------------------------
+-- clearCloudPresent() — reset cloud_present=0 for all rows before a pull
+-- so the library only shows what actually comes back from WebDAV.
+-- ---------------------------------------------------------------------------
+function M:clearCloudPresent()
+    self.db:exec(string.format(
+        "UPDATE books SET cloud_present = 0 WHERE user_id = %q",
+        self.user_id))
+end
+
+-- ---------------------------------------------------------------------------
 -- getChangedBooks(since) — returns every row whose updated_at OR deleted_at
 -- exceeds the watermark. Mirrors useBooksSync.getNewBooks at
 -- apps/readest-app/src/app/library/hooks/useBooksSync.ts:22-35.
