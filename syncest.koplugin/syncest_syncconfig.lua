@@ -4,7 +4,7 @@ local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local util = require("util")
 local sha2 = require("ffi/sha2")
-local _ = require("readest_i18n")
+local _ = require("syncest_i18n")
 
 local SyncConfig = {}
 
@@ -204,12 +204,17 @@ function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp)
                     })
                 end
             end
+            local logger = require("logger")
+            logger.info("Syncest pushConfig callback: success=" .. tostring(success)
+                .. " doc_settings=" .. tostring(ui.doc_settings ~= nil))
             if success and ui.doc_settings then
                 local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
                 local now = os.time()
                 doc_readest_sync.last_pushed_at_config = now
+                logger.info("Syncest pushConfig: saving last_pushed_at_config=" .. now)
                 ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
                 ui.doc_settings:flush()
+                logger.info("Syncest pushConfig: flushed")
             end
         end
     )
@@ -262,11 +267,18 @@ function SyncConfig:pull(ui, settings, client, book_hash, meta_hash, interactive
                 return
             end
 
+            local logger2 = require("logger")
+            logger2.info("Syncest pullConfig callback: success=" .. tostring(success)
+                .. " ui.doc_settings=" .. tostring(ui.doc_settings ~= nil))
             if ui.doc_settings then
                 local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
-                doc_readest_sync.last_synced_at_config = os.time()
+                local now = os.time()
+                doc_readest_sync.last_synced_at_config = now
+                logger2.info("Syncest pullConfig: saving last_synced_at_config=" .. now)
                 ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
                 ui.doc_settings:flush()
+                logger2.info("Syncest pullConfig: saved+flushed, readback="
+                    .. tostring((ui.doc_settings:readSetting("webdav_sync") or {}).last_synced_at_config))
             end
 
             local data = response.configs

@@ -9,7 +9,7 @@
 local ButtonDialog = require("ui/widget/buttondialog")
 local PathChooser  = require("ui/widget/pathchooser")
 local UIManager    = require("ui/uimanager")
-local _            = require("readest_i18n")
+local _            = require("syncest_i18n")
 
 local M = {}
 

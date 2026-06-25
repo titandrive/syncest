@@ -9,9 +9,9 @@ local T = require("ffi/util").template
 local _ = require("gettext")
 
 local WebDavAuth = require("webdav_auth")
-local SyncConfig = require("readest_syncconfig")
-local SyncAnnotations = require("readest_syncannotations")
-local SyncStats = require("readest_syncstats")
+local SyncConfig = require("syncest_syncconfig")
+local SyncAnnotations = require("syncest_syncannotations")
+local SyncStats = require("syncest_syncstats")
 
 local Syncest = WidgetContainer:new{
     name = "syncest",
@@ -455,6 +455,11 @@ function Syncest:showSyncInfo()
     local info = SyncConfig:getMetadataHashInfo(self.ui)
     local doc_sync = self.ui.doc_settings:readSetting("webdav_sync") or {}
     local gs = G_reader_settings:readSetting("webdav_sync") or {}
+    local logger = require("logger")
+    logger.info("Syncest showSyncInfo: last_pushed_at_config=" .. tostring(doc_sync.last_pushed_at_config)
+        .. " last_synced_at_config=" .. tostring(doc_sync.last_synced_at_config)
+        .. " last_pushed_at_notes=" .. tostring(doc_sync.last_pushed_at_notes)
+        .. " last_synced_at_notes=" .. tostring(doc_sync.last_synced_at_notes))
     local placeholder = _("(none)")
     local never = _("Never")
     local function fmt(ts)

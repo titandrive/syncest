@@ -3,7 +3,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local UIManager = require("ui/uimanager")
 local SQ3 = require("lua-ljsqlite3/init")
 local logger = require("logger")
-local _ = require("readest_i18n")
+local _ = require("syncest_i18n")
 
 local SyncStats = {}
 
