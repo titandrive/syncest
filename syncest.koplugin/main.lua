@@ -270,7 +270,7 @@ function Syncest:addToMainMenu(menu_items)
                         separator = true,
                     },
                     {
-                        text = _("AUTO SYNC"),
+                        text = _("Auto Sync Settings"),
                         enabled_func = function() return false end,
                     },
                     {
