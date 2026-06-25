@@ -22,8 +22,16 @@ local Syncest = WidgetContainer:new{
 local API_CALL_DEBOUNCE_DELAY = 30
 
 Syncest.default_settings = {
-    sync_server  = nil,
-    auto_sync    = false,
+    sync_server              = nil,
+    auto_sync                = false,
+    -- Granular auto sync flags (all default on; only meaningful when auto_sync=true)
+    auto_push_progress       = true,
+    auto_pull_progress       = true,
+    auto_push_annotations    = true,
+    auto_pull_annotations    = true,
+    auto_push_stats          = true,
+    auto_pull_stats          = true,
+    auto_sync_catalog        = true,
     user_id      = nil,
     user_name    = nil,
     last_sync_at = nil,
@@ -94,9 +102,15 @@ end
 function Syncest:onReaderReady()
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
         UIManager:nextTick(function()
-            self:pullBookConfig(false)
-            self:pullBookNotes(false)
-            self:pullBookStats(false)
+            if self.settings.auto_pull_progress ~= false then
+                self:pullBookConfig(false)
+            end
+            if self.settings.auto_pull_annotations ~= false then
+                self:pullBookNotes(false)
+            end
+            if self.settings.auto_pull_stats ~= false then
+                self:pullBookStats(false)
+            end
         end)
     end
     self:onDispatcherRegisterReaderActions()
@@ -241,6 +255,89 @@ function Syncest:addToMainMenu(menu_items)
                 text = _("Auto sync"),
                 checked_func = function() return self.settings.auto_sync end,
                 callback = function() self:onSyncestToggleAutoSync() end,
+            },
+            {
+                text = _("Auto sync settings"),
+                enabled_func = function() return self.settings.auto_sync end,
+                sub_item_table = {
+                    {
+                        text = _("Push reading progress on page turn"),
+                        checked_func = function()
+                            return self.settings.auto_push_progress ~= false
+                        end,
+                        callback = function()
+                            self.settings.auto_push_progress =
+                                self.settings.auto_push_progress == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Pull reading progress on book open"),
+                        checked_func = function()
+                            return self.settings.auto_pull_progress ~= false
+                        end,
+                        callback = function()
+                            self.settings.auto_pull_progress =
+                                self.settings.auto_pull_progress == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Push annotations on change"),
+                        checked_func = function()
+                            return self.settings.auto_push_annotations ~= false
+                        end,
+                        callback = function()
+                            self.settings.auto_push_annotations =
+                                self.settings.auto_push_annotations == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Pull annotations on book open"),
+                        checked_func = function()
+                            return self.settings.auto_pull_annotations ~= false
+                        end,
+                        callback = function()
+                            self.settings.auto_pull_annotations =
+                                self.settings.auto_pull_annotations == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Push stats on book close"),
+                        checked_func = function()
+                            return self.settings.auto_push_stats ~= false
+                        end,
+                        callback = function()
+                            self.settings.auto_push_stats =
+                                self.settings.auto_push_stats == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Pull stats on book open"),
+                        checked_func = function()
+                            return self.settings.auto_pull_stats ~= false
+                        end,
+                        callback = function()
+                            self.settings.auto_pull_stats =
+                                self.settings.auto_pull_stats == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Sync book catalog on book close"),
+                        checked_func = function()
+                            return self.settings.auto_sync_catalog ~= false
+                        end,
+                        callback = function()
+                            self.settings.auto_sync_catalog =
+                                self.settings.auto_sync_catalog == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                },
                 separator = true,
             },
             {
@@ -578,16 +675,24 @@ function Syncest:onSyncestPullBooks()       self:syncBooksLibrary("pull", true) 
 function Syncest:onCloseDocument()
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
         NetworkMgr:goOnlineToRun(function()
-            self:pushBookConfig(false)
-            self:pushBookNotes(false)
-            self:pushBookStats(false)
-            self:syncBooksLibrary("both", false)
+            if self.settings.auto_push_progress ~= false then
+                self:pushBookConfig(false)
+            end
+            if self.settings.auto_push_annotations ~= false then
+                self:pushBookNotes(false)
+            end
+            if self.settings.auto_push_stats ~= false then
+                self:pushBookStats(false)
+            end
+            if self.settings.auto_sync_catalog ~= false then
+                self:syncBooksLibrary("both", false)
+            end
         end)
     end
 end
 
 function Syncest:onPageUpdate(page)
-    if self.settings.auto_sync
+    if self.settings.auto_sync and self.settings.auto_push_progress ~= false
             and not WebDavAuth:needsSetup(self.settings) and page then
         if self.delayed_push_task then
             UIManager:unschedule(self.delayed_push_task)
@@ -604,7 +709,8 @@ function Syncest:onAnnotationsModified(items)
             and items.index_modified and items.index_modified < 0 and items[1] then
         SyncAnnotations:recordDeletion(self.ui.doc_settings, items[1])
     end
-    if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
+    if self.settings.auto_sync and self.settings.auto_push_annotations ~= false
+            and not WebDavAuth:needsSetup(self.settings) then
         UIManager:nextTick(function() self:pushBookNotes(false) end)
     end
 end
