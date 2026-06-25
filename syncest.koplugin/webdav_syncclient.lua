@@ -200,7 +200,7 @@ function WebDavSyncClient:pullChanges(params, callback)
         callback(true, data or {notes = {}}, 200)
 
     elseif t == "stats" then
-        local data = self:_readJSON("stats/data.json")
+        local data = self:_readJSON("stats.json")
         if data then
             -- Filter pages newer than the cursor; stamp updated_at_ms so the
             -- stats module can advance its pull cursor.
@@ -268,11 +268,10 @@ function WebDavSyncClient:pushChanges(changes, callback)
     -- Stats — union merge with remote
     if (changes.statBooks and #changes.statBooks > 0)
             or (changes.statPages and #changes.statPages > 0) then
-        self:_ensureFolder("stats")
-        local remote = self:_readJSON("stats/data.json") or {}
+        local remote = self:_readJSON("stats.json") or {}
         local mb, mp = self:_mergeStats(
             remote, changes.statBooks, changes.statPages)
-        if not self:_writeJSON("stats/data.json",
+        if not self:_writeJSON("stats.json",
                 {statBooks = mb, statPages = mp}) then
             ok = false
         end
