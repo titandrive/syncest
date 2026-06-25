@@ -104,7 +104,7 @@ local function patch_bim(opts)
             _no_provider  = true,
         }
         if do_cover_image and group_by and value then
-            local LibraryWidget = package.loaded["library.librarywidget"]
+            local LibraryWidget = package.loaded["syncest_lib.librarywidget"]
             local store = LibraryWidget and LibraryWidget._store
             local settings = M._opts and M._opts.settings or {}
             local bb = group_covers.serve_or_compose(
@@ -173,7 +173,7 @@ local function patch_list_menu_item()
     local orig_update = ListMenuItem.update
     function ListMenuItem:update()
         if self.entry and self.entry._readest_group then
-            local LibraryWidget = package.loaded["library.librarywidget"]
+            local LibraryWidget = package.loaded["syncest_lib.librarywidget"]
             return list_strip.build(self, {
                 store              = LibraryWidget and LibraryWidget._store,
                 settings           = M._opts and M._opts.settings,

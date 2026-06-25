@@ -455,11 +455,6 @@ function Syncest:showSyncInfo()
     local info = SyncConfig:getMetadataHashInfo(self.ui)
     local doc_sync = self.ui.doc_settings:readSetting("webdav_sync") or {}
     local gs = G_reader_settings:readSetting("webdav_sync") or {}
-    local logger = require("logger")
-    logger.info("Syncest showSyncInfo: last_pushed_at_config=" .. tostring(doc_sync.last_pushed_at_config)
-        .. " last_synced_at_config=" .. tostring(doc_sync.last_synced_at_config)
-        .. " last_pushed_at_notes=" .. tostring(doc_sync.last_pushed_at_notes)
-        .. " last_synced_at_notes=" .. tostring(doc_sync.last_synced_at_notes))
     local placeholder = _("(none)")
     local never = _("Never")
     local function fmt(ts)
