@@ -10,7 +10,7 @@
 -- Recomposing each paint is cheap (4 small covers + scale + blit) and
 -- side-steps that cache-coherency surface entirely.
 
-local cloud_covers = require("library.cloud_covers")
+local cloud_covers = require("syncest_lib.cloud_covers")
 
 local M = {}
 

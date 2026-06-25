@@ -3,7 +3,7 @@
 -- this module only walks local-present rows and performs the chosen IO. The IO
 -- is injected via `deps` so it unit-tests without DocSettings; production wires
 -- a DocSettings-backed deps in librarywidget.
-local readingstatus = require("library.readingstatus")
+local readingstatus = require("syncest_lib.readingstatus")
 
 local M = {}
 

@@ -108,7 +108,7 @@ local _readest_format_for_ext = nil
 local function readest_format_for_ext(ext)
     if not _readest_format_for_ext then
         _readest_format_for_ext = {}
-        local EXTS = require("library.exts")
+        local EXTS = require("syncest_lib.exts")
         for fmt, e in pairs(EXTS) do _readest_format_for_ext[e] = fmt end
     end
     return ext and _readest_format_for_ext[ext:lower()]
@@ -187,7 +187,7 @@ function Syncest:_addLocalRow(file, hash, format, _size)
     if existing and existing.deleted_at == nil then
         store:upsertBook({ hash = hash, title = existing.title or title,
             file_path = file, local_present = 1, updated_at = now })
-        local LibraryWidget = require("library.librarywidget")
+        local LibraryWidget = require("syncest_lib.librarywidget")
         if LibraryWidget._menu then LibraryWidget.refresh() end
         UIManager:show(InfoMessage:new{
             text = _("Already in your library: ") .. (existing.title or title),
@@ -199,7 +199,7 @@ function Syncest:_addLocalRow(file, hash, format, _size)
     store:upsertBook({ hash = hash, title = title, format = format,
         file_path = file, local_present = 1, created_at = now,
         updated_at = now, _clear_fields = { "deleted_at" } })
-    local LibraryWidget = require("library.librarywidget")
+    local LibraryWidget = require("syncest_lib.librarywidget")
     if LibraryWidget._menu then LibraryWidget.refresh() end
     UIManager:show(InfoMessage:new{
         text = _("Added to library: ") .. title, timeout = 2,
@@ -467,7 +467,7 @@ function Syncest:openLibrary()
         return
     end
     local client = WebDavAuth:getClient(self.settings)
-    local LibraryWidget = require("library.librarywidget")
+    local LibraryWidget = require("syncest_lib.librarywidget")
     LibraryWidget.open({
         settings = self.settings,
         client   = client,
@@ -476,7 +476,7 @@ end
 
 function Syncest:getLibraryStore()
     if not self.settings.user_id or self.settings.user_id == "" then return nil end
-    local LibraryWidget = require("library.librarywidget")
+    local LibraryWidget = require("syncest_lib.librarywidget")
     if LibraryWidget._store and LibraryWidget._current_user == self.settings.user_id then
         return LibraryWidget._store
     end
@@ -484,7 +484,7 @@ function Syncest:getLibraryStore()
         return self.library_store
     end
     if self.library_store then self.library_store:close() end
-    local LibraryStore = require("library.librarystore")
+    local LibraryStore = require("syncest_lib.librarystore")
     local DataStorage  = require("datastorage")
     self.library_store = LibraryStore.new({
         user_id = self.settings.user_id,
@@ -531,11 +531,11 @@ function Syncest:syncBooksLibrary(mode, interactive)
     -- Scan local books into the store before pushing so the user doesn't
     -- need to open the library first.
     if mode == "push" or mode == "both" then
-        local localscanner = require("library.localscanner")
+        local localscanner = require("syncest_lib.localscanner")
         pcall(localscanner.lightScan, { store = store })
     end
     local client = WebDavAuth:getClient(self.settings)
-    local syncbooks = require("library.syncbooks")
+    local syncbooks = require("syncest_lib.syncbooks")
     syncbooks.syncBooks({
         client   = client,
         settings = self.settings,
@@ -547,7 +547,7 @@ function Syncest:syncBooksLibrary(mode, interactive)
                 timeout = 2,
             })
         end
-        local LibraryWidget = require("library.librarywidget")
+        local LibraryWidget = require("syncest_lib.librarywidget")
         if LibraryWidget._menu then LibraryWidget.refresh() end
     end, function()
         self:touchOpenBook()

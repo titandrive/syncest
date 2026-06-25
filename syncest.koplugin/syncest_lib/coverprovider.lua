@@ -97,7 +97,7 @@ function M.get_cloud_cover(book, opts, on_ready)
     -- Don't retry a known-missing cover (avoids a 404 storm on every paint).
     if book.cover_path == M.MISSING then return nil end
 
-    local syncbooks = require("library.syncbooks")
+    local syncbooks = require("syncest_lib.syncbooks")
     syncbooks.downloadCover(book, opts, function(success, path_or_err, status)
         if success then
             if on_ready then on_ready(path_or_err) end

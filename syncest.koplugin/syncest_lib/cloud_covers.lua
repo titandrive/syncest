@@ -85,7 +85,7 @@ local function process_queue()
     _downloading = true
     logger.info("WebDavSync cover download: starting " .. tag_for(hash))
 
-    local syncbooks = require("library.syncbooks")
+    local syncbooks = require("syncest_lib.syncbooks")
     syncbooks.downloadCover(
         {hash = hash},
         {

@@ -20,11 +20,11 @@ local UIManager    = require("ui/uimanager")
 local logger       = require("logger")
 local _            = require("readest_i18n")
 
-local LibraryStore   = require("library.librarystore")
-local libraryitem    = require("library.libraryitem")
-local librarypaint   = require("library.librarypaint")
-local localscanner   = require("library.localscanner")
-local syncbooks      = require("library.syncbooks")
+local LibraryStore   = require("syncest_lib.librarystore")
+local libraryitem    = require("syncest_lib.libraryitem")
+local librarypaint   = require("syncest_lib.librarypaint")
+local localscanner   = require("syncest_lib.localscanner")
+local syncbooks      = require("syncest_lib.syncbooks")
 
 local M = {}
 
@@ -477,7 +477,7 @@ local function runCloudSync(opts, store)
     local mode = opts.settings.auto_sync and "both" or "pull"
     local DocSettings = require("docsettings")
     local ok_bl, BookList = pcall(require, "ui/widget/booklist")
-    local statussync = require("library.statussync")
+    local statussync = require("syncest_lib.statussync")
     local deps = {
         now_ms = function() return os.time() * 1000 end,
         open_summary = function(file_path)
@@ -632,7 +632,7 @@ function M._open(opts, internal)
     -- handler is registered on the Menu's ges_events below — this title
     -- bar just supplies the dimen for the gesture range.
     local view_menu_callback = function()
-        local LibraryViewMenu = require("library.libraryviewmenu")
+        local LibraryViewMenu = require("syncest_lib.libraryviewmenu")
         local prev_group_by = active_group_by(opts.settings)
         LibraryViewMenu.show({
             settings         = opts.settings,

@@ -11,7 +11,7 @@
 --   }
 -- but with the cover-area widened from 1× row-height to 4× row-height.
 
-local group_covers = require("library.group_covers")
+local group_covers = require("syncest_lib.group_covers")
 
 local M = {}
 

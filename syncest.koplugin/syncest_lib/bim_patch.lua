@@ -16,10 +16,10 @@
 -- it via debug.getupvalue on the exported _updateItemsBuildUI mixin.
 
 local logger = require("logger")
-local cloud_covers = require("library.cloud_covers")
-local group_covers = require("library.group_covers")
-local cloud_icons  = require("library.cloud_icons")
-local list_strip   = require("library.list_strip")
+local cloud_covers = require("syncest_lib.cloud_covers")
+local group_covers = require("syncest_lib.group_covers")
+local cloud_icons  = require("syncest_lib.cloud_icons")
+local list_strip   = require("syncest_lib.list_strip")
 
 local M = {}
 

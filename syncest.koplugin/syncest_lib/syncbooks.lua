@@ -4,7 +4,7 @@
 
 local M = {}
 
-local EXTS = require("library.exts")
+local EXTS = require("syncest_lib.exts")
 
 -- ---------------------------------------------------------------------------
 -- build_local_filename: where downloaded book bytes land on disk
@@ -207,7 +207,7 @@ end
 -- ---------------------------------------------------------------------------
 function M.pullBooks(opts, cb)
     local logger       = require("logger")
-    local LibraryStore = require("library.librarystore")
+    local LibraryStore = require("syncest_lib.librarystore")
     local client       = opts.client
 
     if not client then

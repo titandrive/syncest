@@ -14,9 +14,9 @@
 -- (install, set_visible_hashes) to the right submodule.
 
 local logger       = require("logger")
-local cloud_covers = require("library.cloud_covers")
-local group_covers = require("library.group_covers")
-local bim_patch    = require("library.bim_patch")
+local cloud_covers = require("syncest_lib.cloud_covers")
+local group_covers = require("syncest_lib.group_covers")
+local bim_patch    = require("syncest_lib.bim_patch")
 
 local M = {}
 
@@ -165,7 +165,7 @@ function M.entry_from_row(row, _opts)
         is_file      = true,
         mandatory    = "",
     }
-    local EXTS = require("library.exts")
+    local EXTS = require("syncest_lib.exts")
     local ext = (EXTS[row.format] or "epub")
     if row.local_present == 1 and row.file_path then
         entry.file = row.file_path

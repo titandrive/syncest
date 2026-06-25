@@ -119,8 +119,8 @@ function M.show(opts)
                     text = _("Rescan library"),
                     callback = function()
                         local Trapper = require("ui/trapper")
-                        local LibraryWidget = require("library.librarywidget")
-                        local localscanner = require("library.localscanner")
+                        local LibraryWidget = require("syncest_lib.librarywidget")
+                        local localscanner = require("syncest_lib.localscanner")
                         Trapper:wrap(function()
                             localscanner.fullSidecarWalk({
                                 store    = LibraryWidget._store,
