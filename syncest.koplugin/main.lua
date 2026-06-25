@@ -507,11 +507,8 @@ function Syncest:pushBookConfig(interactive)
     if not client then return end
     self.last_sync_timestamp = SyncConfig:push(
         self.ui, self.settings, client, interactive, self.last_sync_timestamp)
-    if self.settings.mirror_to_kosync then
-        local kosync = self.ui.KOSync or self.ui.kosync
-        if kosync then
-            pcall(function() kosync:pushProgress() end)
-        end
+    if self.settings.mirror_to_kosync and self.ui.kosync then
+        pcall(function() self.ui.kosync:updateProgress(true, false) end)
     end
 end
 
