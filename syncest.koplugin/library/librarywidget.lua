@@ -83,7 +83,7 @@ end
 -- ---------------------------------------------------------------------------
 local function ensure_store(settings)
     local DataStorage = require("datastorage")
-    local db_path = DataStorage:getSettingsDir() .. "/readest_library.sqlite3"
+    local db_path = DataStorage:getSettingsDir() .. "/syncest_library.sqlite3"
     if M._store and M._current_user == settings.user_id then return M._store end
     if M._store then M._store:close() end
     M._store = LibraryStore.new({ user_id = settings.user_id, db_path = db_path })
@@ -470,6 +470,10 @@ end
 --         view stays meaningful, but never silently push local state).
 -- ---------------------------------------------------------------------------
 local function runCloudSync(opts, store)
+    if not opts.client then
+        logger.info("ReadestLibrary runCloudSync: no client configured, skipping")
+        return
+    end
     local mode = opts.settings.auto_sync and "both" or "pull"
     local DocSettings = require("docsettings")
     local BookList = require("ui/widget/booklist")

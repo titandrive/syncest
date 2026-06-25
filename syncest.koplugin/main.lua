@@ -35,6 +35,23 @@ function Syncest:init()
     self.last_sync_timestamp = 0
     self.settings = G_reader_settings:readSetting("webdav_sync", self.default_settings)
 
+    -- Migrate pre-SyncService settings (webdav_address/username/password → sync_server)
+    if not self.settings.sync_server and self.settings.webdav_address then
+        self.settings.sync_server = {
+            address  = self.settings.webdav_address,
+            username = self.settings.webdav_username or "",
+            password = self.settings.webdav_password or "",
+            url      = self.settings.webdav_base_path or "",
+            type     = "webdav",
+            name     = self.settings.user_name or "",
+        }
+        self.settings.webdav_address   = nil
+        self.settings.webdav_username  = nil
+        self.settings.webdav_password  = nil
+        self.settings.webdav_base_path = nil
+        G_reader_settings:saveSetting("webdav_sync", self.settings)
+    end
+
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
     self:registerFileDialogButton()
