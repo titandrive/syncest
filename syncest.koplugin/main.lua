@@ -508,7 +508,7 @@ function Syncest:pushBookConfig(interactive)
     self.last_sync_timestamp = SyncConfig:push(
         self.ui, self.settings, client, interactive, self.last_sync_timestamp)
     if self.settings.mirror_to_kosync and self.ui.kosync then
-        self.ui.kosync:pushProgress()
+        pcall(function() self.ui.kosync:pushProgress() end)
     end
 end
 
