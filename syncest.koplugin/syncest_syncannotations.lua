@@ -280,7 +280,7 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
                     ui.doc_settings:saveSetting("webdav_sync", synced)
                     ui.doc_settings:flush()
                 end
-                if notify_fn then notify_fn("annotations") end
+                if notify_fn then notify_fn("annotations", "pushed") end
             end
         end
     )
@@ -433,7 +433,7 @@ function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog
             if added > 0 or removed > 0 then
                 UIManager:setDirty(dialog, "ui")
             end
-            if notify_fn then notify_fn("annotations") end
+            if notify_fn then notify_fn("annotations", "pulled") end
         end
     )
 end

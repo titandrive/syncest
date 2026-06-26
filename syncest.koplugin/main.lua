@@ -41,18 +41,20 @@ Syncest.default_settings = {
 
 -- ── Lifecycle ──────────────────────────────────────────────────────
 
-function Syncest:_autoNotify(label)
+function Syncest:_autoNotify(label, action)
     if not self._notify_labels then self._notify_labels = {} end
-    self._notify_labels[label] = true
+    self._notify_labels[label] = action
     if self._notify_task then UIManager:unschedule(self._notify_task) end
     self._notify_task = function()
         local order = { "progress", "annotations", "stats" }
         local parts = {}
         for _, k in ipairs(order) do
-            if self._notify_labels[k] then parts[#parts + 1] = k end
+            if self._notify_labels[k] then
+                parts[#parts + 1] = k .. " " .. self._notify_labels[k]
+            end
         end
         UIManager:show(Notification:new{
-            text = table.concat(parts, ", ") .. " synced",
+            text = table.concat(parts, ", "),
             timeout = 2,
         })
         self._notify_labels = nil
@@ -536,7 +538,7 @@ function Syncest:pushBookConfig(interactive, notify)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
+    local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
     self.last_sync_timestamp = SyncConfig:push(
         self.ui, self.settings, client, interactive, self.last_sync_timestamp, notify_fn)
     if self.settings.mirror_to_kosync and self.ui.kosync then
@@ -553,7 +555,7 @@ function Syncest:pullBookConfig(interactive, notify)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
+    local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
     SyncConfig:pull(self.ui, self.settings, client, book_hash, meta_hash,
         interactive, function() end, notify_fn)
 end
@@ -567,7 +569,7 @@ function Syncest:pushBookStats(interactive, notify)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
+    local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
     SyncStats:push(self.settings, client, interactive, notify_fn)
 end
 
@@ -578,7 +580,7 @@ function Syncest:pullBookStats(interactive, notify)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
+    local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
     SyncStats:pull(self.settings, client, interactive, function() end, notify_fn)
 end
 
@@ -591,7 +593,7 @@ function Syncest:pushBookNotes(interactive, full_sync, notify)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
+    local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
     SyncAnnotations:push(self.ui, self.settings, client, interactive, full_sync, notify_fn)
 end
 
@@ -604,7 +606,7 @@ function Syncest:pullBookNotes(interactive, full_sync, notify)
     end
     local client = self:ensureClient(interactive)
     if not client then return end
-    local notify_fn = notify and function(l) self:_autoNotify(l) end or nil
+    local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
     SyncAnnotations:pull(self.ui, self.settings, client, book_hash, meta_hash,
         self.dialog, interactive, full_sync, notify_fn)
 end

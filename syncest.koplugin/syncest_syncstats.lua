@@ -116,7 +116,7 @@ function SyncStats:push(settings, client, interactive, notify_fn)
                 settings.stats_last_pushed_at = os.time()
                 G_reader_settings:saveSetting("webdav_sync", settings)
                 logger.dbg("ReadestStats push: cursor advanced to " .. tostring(max_start))
-                if notify_fn then notify_fn("stats") end
+                if notify_fn then notify_fn("stats", "pushed") end
             else
                 logger.dbg("ReadestStats push: failed, cursor unchanged; body=" .. tostring(body))
             end
@@ -155,7 +155,7 @@ function SyncStats:pull(settings, client, interactive, logout_fn, notify_fn)
             else
                 logger.dbg("ReadestStats pull: cursor unchanged (no newer rows)")
             end
-            if notify_fn then notify_fn("stats") end
+            if notify_fn then notify_fn("stats", "pulled") end
         end)
 end
 
