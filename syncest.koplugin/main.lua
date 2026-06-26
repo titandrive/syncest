@@ -449,6 +449,7 @@ function Syncest:addToMainMenu(menu_items)
                     text = _("Pull annotations now"),
                     enabled_func = function() return configured end,
                     callback = function() self:pullBookNotes(true, false, true) end,
+                    separator = true,
                 },
             }
             -- Insert after the 3 settings items (Configure, Auto sync, Sync settings)
