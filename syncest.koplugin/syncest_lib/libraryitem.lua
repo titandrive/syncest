@@ -50,7 +50,7 @@ function M.set_visible_hashes(menu)
         return
     end
 
-    local LibraryWidget = package.loaded["library.librarywidget"]
+    local LibraryWidget = package.loaded["syncest_lib.librarywidget"]
     local store = LibraryWidget and LibraryWidget._store
     local settings = (bim_patch._opts and bim_patch._opts.settings) or {}
     local view_mode = (settings.library_view_mode == "list") and "list" or "mosaic"
