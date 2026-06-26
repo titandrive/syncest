@@ -545,11 +545,10 @@ local function runOpenSync(opts, store, menu)
             .. tostring(opts.settings.user_id and opts.settings.user_id:sub(1, 8))
             .. " auto_sync=" .. tostring(opts.settings.auto_sync))
 
-        -- Clear cloud_present so the library starts empty and shows ONLY what
-        -- comes back from the WebDAV pull. This makes the library a true cloud
-        -- view: delete books from the cloud and they disappear here.
+        -- Clear cloud_present before pull so books deleted from the cloud
+        -- disappear here. Defer the refresh until AFTER the sync so the
+        -- library shows the last-known state instead of going blank.
         store:clearCloudPresent()
-        M.refresh()
 
         UIManager:scheduleIn(SYNC_DEFER_SECONDS, function()
             if NetworkMgr:willRerunWhenOnline(function() runCloudSync(opts, store) end) then
