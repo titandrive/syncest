@@ -387,6 +387,54 @@ function Syncest:addToMainMenu(menu_items)
                 },
                 separator = true,
             },
+            -- ── Reading Progress & Annotations ──────────────────────
+            {
+                text = _("Push reading progress now"),
+                show_func = function() return self.ui.document ~= nil end,
+                enabled_func = function()
+                    return not WebDavAuth:needsSetup(self.settings)
+                end,
+                callback = function() self:pushBookConfig(true, true) end,
+            },
+            {
+                text = _("Pull reading progress now"),
+                show_func = function() return self.ui.document ~= nil end,
+                enabled_func = function()
+                    return not WebDavAuth:needsSetup(self.settings)
+                end,
+                callback = function() self:pullBookConfig(true, true) end,
+            },
+            {
+                text = _("Push annotations now"),
+                show_func = function() return self.ui.document ~= nil end,
+                enabled_func = function()
+                    return not WebDavAuth:needsSetup(self.settings)
+                end,
+                callback = function() self:pushBookNotes(true, true, true) end,
+            },
+            {
+                text = _("Pull annotations now"),
+                show_func = function() return self.ui.document ~= nil end,
+                enabled_func = function()
+                    return not WebDavAuth:needsSetup(self.settings)
+                end,
+                callback = function() self:pullBookNotes(true, false, true) end,
+            },
+            {
+                text = _("Full sync all annotations"),
+                show_func = function() return self.ui.document ~= nil end,
+                enabled_func = function()
+                    return not WebDavAuth:needsSetup(self.settings)
+                end,
+                callback = function() self:fullSyncBookNotes() end,
+            },
+            {
+                text = _("Sync info"),
+                show_func = function() return self.ui.document ~= nil end,
+                callback = function() self:showSyncInfo() end,
+                separator = true,
+            },
+            -- ── Library & Books ─────────────────────────────────────
             {
                 text = _("Syncest Library"),
                 enabled_func = function()
@@ -394,6 +442,22 @@ function Syncest:addToMainMenu(menu_items)
                 end,
                 callback = function() self:openLibrary() end,
             },
+            {
+                text = _("Push books now"),
+                enabled_func = function()
+                    return not WebDavAuth:needsSetup(self.settings)
+                end,
+                callback = function() self:syncBooksLibrary("push", true) end,
+            },
+            {
+                text = _("Pull books now"),
+                enabled_func = function()
+                    return not WebDavAuth:needsSetup(self.settings)
+                end,
+                callback = function() self:syncBooksLibrary("pull", true) end,
+                separator = true,
+            },
+            -- ── Stats & Vocab ───────────────────────────────────────
             {
                 text = _("Push stats now"),
                 enabled_func = function()
@@ -421,68 +485,6 @@ function Syncest:addToMainMenu(menu_items)
                     return not WebDavAuth:needsSetup(self.settings)
                 end,
                 callback = function() self:pullVocab(true, true) end,
-            },
-            {
-                text = _("Push books now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
-                callback = function() self:syncBooksLibrary("push", true) end,
-            },
-            {
-                text = _("Pull books now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
-                callback = function() self:syncBooksLibrary("pull", true) end,
-                separator = true,
-            },
-            {
-                text = _("Push reading progress now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                        and self.ui.document ~= nil
-                end,
-                callback = function() self:pushBookConfig(true, true) end,
-            },
-            {
-                text = _("Pull reading progress now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                        and self.ui.document ~= nil
-                end,
-                callback = function() self:pullBookConfig(true, true) end,
-                separator = true,
-            },
-            {
-                text = _("Push annotations now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                        and self.ui.document ~= nil
-                end,
-                callback = function() self:pushBookNotes(true, true, true) end,
-            },
-            {
-                text = _("Pull annotations now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                        and self.ui.document ~= nil
-                end,
-                callback = function() self:pullBookNotes(true, false, true) end,
-            },
-            {
-                text = _("Full sync all annotations"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                        and self.ui.document ~= nil
-                end,
-                callback = function() self:fullSyncBookNotes() end,
-                separator = true,
-            },
-            {
-                text = _("Sync info"),
-                enabled_func = function() return self.ui.document ~= nil end,
-                callback = function() self:showSyncInfo() end,
             },
         }
     }
