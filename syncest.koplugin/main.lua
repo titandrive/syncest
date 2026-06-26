@@ -143,21 +143,20 @@ end
 
 function Syncest:onReaderReady()
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
-        UIManager:nextTick(function()
-            if self.settings.auto_pull_progress ~= false then
-                self:pullBookConfig(false, true)
-            end
-            if self.settings.auto_pull_annotations ~= false then
-                self:pullBookNotes(false, false, true)
-            end
-            if self.settings.auto_pull_stats ~= false then
-                self:pullBookStats(false, true)
-            end
-            if self.settings.auto_pull_vocab ~= false then
-                self:pullVocab(false, true)
-            end
-            -- vocab push is triggered by WordLookedUp, not on open
-        end)
+        -- Stagger each sync into its own tick so the UI thread gets to
+        -- breathe between calls and Android's ANR timer resets.
+        if self.settings.auto_pull_progress ~= false then
+            UIManager:nextTick(function() self:pullBookConfig(false, true) end)
+        end
+        if self.settings.auto_pull_annotations ~= false then
+            UIManager:scheduleIn(0.1, function() self:pullBookNotes(false, false, true) end)
+        end
+        if self.settings.auto_pull_stats ~= false then
+            UIManager:scheduleIn(0.2, function() self:pullBookStats(false, true) end)
+        end
+        if self.settings.auto_pull_vocab ~= false then
+            UIManager:scheduleIn(0.3, function() self:pullVocab(false, true) end)
+        end
     end
     self:onDispatcherRegisterReaderActions()
 end
