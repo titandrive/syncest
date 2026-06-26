@@ -1,5 +1,6 @@
 local Dispatcher = require("dispatcher")
 local InfoMessage = require("ui/widget/infomessage")
+local Notification = require("ui/widget/notification")
 local KeyValuePage = require("ui/widget/keyvaluepage")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local NetworkMgr = require("ui/network/manager")
@@ -50,7 +51,6 @@ function Syncest:_autoNotify(label)
         for _, k in ipairs(order) do
             if self._notify_labels[k] then parts[#parts + 1] = k end
         end
-        local Notification = require("ui/widget/notification")
         UIManager:show(Notification:new{
             text = table.concat(parts, ", ") .. " synced",
             timeout = 2,
@@ -58,7 +58,7 @@ function Syncest:_autoNotify(label)
         self._notify_labels = nil
         self._notify_task = nil
     end
-    UIManager:scheduleIn(2, self._notify_task)
+    UIManager:scheduleIn(0.5, self._notify_task)
 end
 
 function Syncest:init()
@@ -726,10 +726,10 @@ function Syncest:onSyncestToggleAutoSync(toggle)
     end
 end
 
-function Syncest:onSyncestPushProgress()    self:pushBookConfig(true, true)       end
-function Syncest:onSyncestPullProgress()    self:pullBookConfig(true, true)       end
-function Syncest:onSyncestPushAnnotations() self:pushBookNotes(true, false, true) end
-function Syncest:onSyncestPullAnnotations() self:pullBookNotes(true, false, true) end
+function Syncest:onSyncestPushProgress()    self:pushBookConfig(true, true)        end
+function Syncest:onSyncestPullProgress()    self:pullBookConfig(true, true)        end
+function Syncest:onSyncestPushAnnotations() self:pushBookNotes(true, true, true)   end
+function Syncest:onSyncestPullAnnotations() self:pullBookNotes(true, false, true)  end
 function Syncest:onSyncestOpenLibrary()     self:openLibrary()           end
 function Syncest:onSyncestPushBooks()       self:syncBooksLibrary("push", true) end
 function Syncest:onSyncestPullBooks()       self:syncBooksLibrary("pull", true) end
