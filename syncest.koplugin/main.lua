@@ -13,6 +13,7 @@ local WebDavAuth = require("webdav_auth")
 local SyncConfig = require("syncest_syncconfig")
 local SyncAnnotations = require("syncest_syncannotations")
 local SyncStats = require("syncest_syncstats")
+local SyncVocab = require("syncest_syncvocab")
 
 local Syncest = WidgetContainer:new{
     name = "syncest",
@@ -46,7 +47,7 @@ function Syncest:_autoNotify(label, action)
     self._notify_labels[label] = action
     if self._notify_task then UIManager:unschedule(self._notify_task) end
     self._notify_task = function()
-        local order = { "progress", "annotations", "stats" }
+        local order = { "progress", "annotations", "stats", "vocab" }
         local parts = {}
         for _, k in ipairs(order) do
             if self._notify_labels[k] then
@@ -134,6 +135,9 @@ function Syncest:onReaderReady()
             end
             if self.settings.auto_pull_stats ~= false then
                 self:pullBookStats(false, true)
+            end
+            if self.settings.auto_pull_vocab ~= false then
+                self:pullVocab(false, true)
             end
         end)
     end
@@ -404,6 +408,20 @@ function Syncest:addToMainMenu(menu_items)
                 callback = function() self:pullBookStats(true, true) end,
             },
             {
+                text = _("Push vocab now"),
+                enabled_func = function()
+                    return not WebDavAuth:needsSetup(self.settings)
+                end,
+                callback = function() self:pushVocab(true, true) end,
+            },
+            {
+                text = _("Pull vocab now"),
+                enabled_func = function()
+                    return not WebDavAuth:needsSetup(self.settings)
+                end,
+                callback = function() self:pullVocab(true, true) end,
+            },
+            {
                 text = _("Push books now"),
                 enabled_func = function()
                     return not WebDavAuth:needsSetup(self.settings)
@@ -583,6 +601,30 @@ function Syncest:pullBookStats(interactive, notify)
     SyncStats:pull(self.settings, client, interactive, function() end, notify_fn)
 end
 
+-- ── Vocab sync ─────────────────────────────────────────────────────
+
+function Syncest:pushVocab(interactive, notify)
+    if interactive and NetworkMgr:willRerunWhenOnline(
+            function() self:pushVocab(interactive) end) then
+        return
+    end
+    local client = self:ensureClient(interactive)
+    if not client then return end
+    local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
+    SyncVocab:push(self.settings, client, interactive, notify_fn)
+end
+
+function Syncest:pullVocab(interactive, notify)
+    if NetworkMgr:willRerunWhenOnline(
+            function() self:pullVocab(interactive) end) then
+        return
+    end
+    local client = self:ensureClient(interactive)
+    if not client then return end
+    local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
+    SyncVocab:pull(self.settings, client, interactive, notify_fn)
+end
+
 -- ── Annotation sync ────────────────────────────────────────────────
 
 function Syncest:pushBookNotes(interactive, full_sync, notify)
@@ -746,6 +788,9 @@ function Syncest:onCloseDocument()
             end
             if self.settings.auto_push_stats ~= false then
                 self:pushBookStats(false, true)
+            end
+            if self.settings.auto_push_vocab ~= false then
+                self:pushVocab(false, true)
             end
             if self.settings.auto_sync_catalog ~= false then
                 self:syncBooksLibrary("both", false)

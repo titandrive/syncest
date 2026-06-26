@@ -142,6 +142,28 @@ function WebDavSyncClient:_mergeBooks(existing, incoming)
     return result
 end
 
+-- Union-merge vocab words by word; higher review_count wins, then newer review_time.
+function WebDavSyncClient:_mergeVocab(existing, incoming)
+    local by_word = {}
+    for _, w in ipairs(existing or {}) do
+        if w.word then by_word[w.word] = w end
+    end
+    for _, w in ipairs(incoming or {}) do
+        if w.word then
+            local ex = by_word[w.word]
+            if not ex
+                    or (w.review_count or 0) > (ex.review_count or 0)
+                    or ((w.review_count or 0) == (ex.review_count or 0)
+                        and (w.review_time or 0) > (ex.review_time or 0)) then
+                by_word[w.word] = w
+            end
+        end
+    end
+    local result = {}
+    for _, w in pairs(by_word) do result[#result + 1] = w end
+    return result
+end
+
 -- Union-merge stat books by book_hash; union stat pages by
 -- (book_hash, page, start_time), taking the longer duration.
 function WebDavSyncClient:_mergeStats(existing, incoming_books, incoming_pages)
@@ -221,6 +243,10 @@ function WebDavSyncClient:pullChanges(params, callback)
             callback(true, {statBooks = {}, statPages = {}}, 200)
         end
 
+    elseif t == "vocab" then
+        local data = self:_readJSON("vocab.json")
+        callback(true, data or {words = {}}, 200)
+
     else
         callback(false, nil, 400)
     end
@@ -273,6 +299,15 @@ function WebDavSyncClient:pushChanges(changes, callback)
             remote, changes.statBooks, changes.statPages)
         if not self:_writeJSON("stats.json",
                 {statBooks = mb, statPages = mp}) then
+            ok = false
+        end
+    end
+
+    -- Vocab builder words — union merge with remote
+    if changes.vocab then
+        local remote = self:_readJSON("vocab.json") or {words = {}}
+        local merged = self:_mergeVocab(remote.words or {}, changes.vocab)
+        if not self:_writeJSON("vocab.json", {words = merged}) then
             ok = false
         end
     end
