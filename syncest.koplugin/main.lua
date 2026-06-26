@@ -15,6 +15,23 @@ local SyncAnnotations = require("syncest_syncannotations")
 local SyncStats = require("syncest_syncstats")
 local SyncVocab = require("syncest_syncvocab")
 
+local GITHUB_RAW_BASE = "https://raw.githubusercontent.com/titandrive/syncest/main/syncest.koplugin/"
+local PLUGIN_VERSION = require("_meta").version
+
+local function is_newer_version(latest, current)
+    local function parts(v)
+        local t = {}
+        for n in v:gmatch("%d+") do t[#t+1] = tonumber(n) end
+        return t
+    end
+    local lp, cp = parts(latest), parts(current)
+    for i = 1, math.max(#lp, #cp) do
+        local l, c = lp[i] or 0, cp[i] or 0
+        if l ~= c then return l > c end
+    end
+    return false
+end
+
 local Syncest = WidgetContainer:new{
     name = "syncest",
     title = _("Syncest"),
@@ -253,6 +270,129 @@ function Syncest:onAddToSyncestLibrary(file)
     self:addToLibrary(file)
 end
 
+-- ── Update checker ─────────────────────────────────────────────────
+
+function Syncest:checkForUpdates()
+    local checking = InfoMessage:new{ text = _("Checking for updates...") }
+    UIManager:show(checking)
+    UIManager:forceRePaint()
+
+    local ok_https, https = pcall(require, "ssl.https")
+    if not ok_https then
+        UIManager:close(checking)
+        UIManager:show(InfoMessage:new{ text = _("Update check requires network support."), timeout = 3 })
+        return
+    end
+    local ltn12 = require("ltn12")
+    local ok_sutil, socketutil = pcall(require, "socketutil")
+    if ok_sutil then socketutil:set_timeout(5, 15) end
+
+    local body = {}
+    local ok_req, status = pcall(function()
+        local _, s = https.request{
+            url = GITHUB_RAW_BASE .. "_meta.lua",
+            method = "GET",
+            headers = { ["User-Agent"] = "KOReader-Syncest/" .. PLUGIN_VERSION },
+            sink = ltn12.sink.table(body),
+        }
+        return s
+    end)
+
+    if ok_sutil then pcall(function() socketutil:reset_timeout() end) end
+    UIManager:close(checking)
+
+    if not ok_req or status ~= 200 then
+        UIManager:show(InfoMessage:new{
+            text = _("Could not reach update server. Check your network connection."),
+            timeout = 3,
+        })
+        return
+    end
+
+    local latest = table.concat(body):match('version%s*=%s*"([^"]+)"')
+    if not latest then
+        UIManager:show(InfoMessage:new{ text = _("Could not read version information."), timeout = 3 })
+        return
+    end
+
+    if not is_newer_version(latest, PLUGIN_VERSION) then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Syncest v%1 is up to date."), PLUGIN_VERSION),
+            timeout = 3,
+        })
+        return
+    end
+
+    local ConfirmBox = require("ui/widget/confirmbox")
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Version %1 is available (installed: v%2). Install now?"), latest, PLUGIN_VERSION),
+        ok_text = _("Install"),
+        cancel_text = _("Later"),
+        ok_callback = function() self:installUpdate(latest) end,
+    })
+end
+
+function Syncest:installUpdate(version)
+    local msg = InfoMessage:new{ text = _("Downloading update...") }
+    UIManager:show(msg)
+    UIManager:forceRePaint()
+
+    local ok_https, https = pcall(require, "ssl.https")
+    if not ok_https then
+        UIManager:close(msg)
+        UIManager:show(InfoMessage:new{ text = _("Update failed: network support unavailable."), timeout = 3 })
+        return
+    end
+    local ltn12 = require("ltn12")
+    local ok_sutil, socketutil = pcall(require, "socketutil")
+    if ok_sutil then socketutil:set_timeout(10, 60) end
+
+    local files = {
+        "_meta.lua", "main.lua", "syncest_i18n.lua", "syncest_insert_menu.lua",
+        "syncest_syncannotations.lua", "syncest_syncconfig.lua", "syncest_syncstats.lua",
+        "syncest_syncvocab.lua", "webdav_auth.lua", "webdav_syncclient.lua",
+        "syncest_lib/bim_patch.lua", "syncest_lib/cloud_covers.lua", "syncest_lib/cloud_icons.lua",
+        "syncest_lib/coverprovider.lua", "syncest_lib/exts.lua", "syncest_lib/group_covers.lua",
+        "syncest_lib/libraryitem.lua", "syncest_lib/librarypaint.lua", "syncest_lib/librarystore.lua",
+        "syncest_lib/libraryviewmenu.lua", "syncest_lib/librarywidget.lua", "syncest_lib/list_strip.lua",
+        "syncest_lib/localscanner.lua", "syncest_lib/readingstatus.lua", "syncest_lib/statussync.lua",
+        "syncest_lib/syncbooks.lua",
+    }
+
+    for _, fname in ipairs(files) do
+        local f = io.open(self.path .. "/" .. fname, "wb")
+        if not f then
+            if ok_sutil then pcall(function() socketutil:reset_timeout() end) end
+            UIManager:close(msg)
+            UIManager:show(InfoMessage:new{ text = T(_("Update failed: could not write %1"), fname), timeout = 3 })
+            return
+        end
+        local ok_req, fstatus = pcall(function()
+            local _, s = https.request{
+                url = GITHUB_RAW_BASE .. fname,
+                method = "GET",
+                headers = { ["User-Agent"] = "KOReader-Syncest/" .. version },
+                sink = ltn12.sink.file(f),
+            }
+            return s
+        end)
+        if not ok_req then pcall(function() f:close() end) end
+        if not ok_req or fstatus ~= 200 then
+            if ok_sutil then pcall(function() socketutil:reset_timeout() end) end
+            UIManager:close(msg)
+            UIManager:show(InfoMessage:new{ text = T(_("Update failed: could not download %1"), fname), timeout = 3 })
+            return
+        end
+    end
+
+    if ok_sutil then pcall(function() socketutil:reset_timeout() end) end
+    UIManager:close(msg)
+    UIManager:show(InfoMessage:new{
+        text = T(_("Syncest updated to v%1. Please restart KOReader."), version),
+        timeout = 5,
+    })
+end
+
 -- ── Menu ───────────────────────────────────────────────────────────
 
 function Syncest:addToMainMenu(menu_items)
@@ -400,6 +540,11 @@ function Syncest:addToMainMenu(menu_items)
                 },
                 separator = true,
             },
+            {
+                text = T(_("Syncest v%1"), PLUGIN_VERSION),
+                callback = function() self:checkForUpdates() end,
+                separator = true,
+            },
             -- ── Library & Books ─────────────────────────────────────
             {
                 text = _("Syncest Library"),
@@ -464,9 +609,9 @@ function Syncest:addToMainMenu(menu_items)
                     separator = true,
                 },
             }
-            -- Insert after the 3 settings items (Configure, Auto sync, Sync settings)
+            -- Insert after the 4 settings items (Configure, Auto sync, Sync settings, Version)
             for i = #book_items, 1, -1 do
-                table.insert(items, 4, book_items[i])
+                table.insert(items, 5, book_items[i])
             end
             -- Sync info always at the very bottom
             items[#items].separator = true
