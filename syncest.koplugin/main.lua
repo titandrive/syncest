@@ -791,6 +791,6 @@ function Syncest:deletePluginSettings()
     return true
 end
 
-require("insert_menu")
+require("syncest_insert_menu")
 
 return Syncest
