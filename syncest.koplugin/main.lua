@@ -397,18 +397,6 @@ function Syncest:addToMainMenu(menu_items)
                             G_reader_settings:saveSetting("webdav_sync", self.settings)
                         end,
                     },
-                    {
-                        text = _("Sync book catalog on book close"),
-                        enabled_func = function() return self.settings.auto_sync end,
-                        checked_func = function()
-                            return self.settings.auto_sync_catalog ~= false
-                        end,
-                        callback = function()
-                            self.settings.auto_sync_catalog =
-                                self.settings.auto_sync_catalog == false
-                            G_reader_settings:saveSetting("webdav_sync", self.settings)
-                        end,
-                    },
                 },
                 separator = true,
             },
@@ -801,9 +789,6 @@ function Syncest:onCloseDocument()
             end
             if self.settings.auto_push_vocab ~= false then
                 self:pushVocab(false, true)
-            end
-            if self.settings.auto_sync_catalog ~= false then
-                self:syncBooksLibrary("both", false)
             end
         end)
     end
