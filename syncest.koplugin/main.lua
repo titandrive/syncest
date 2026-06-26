@@ -139,6 +139,7 @@ function Syncest:onReaderReady()
             if self.settings.auto_pull_vocab ~= false then
                 self:pullVocab(false, true)
             end
+            -- vocab push is triggered by WordLookedUp, not on open
         end)
     end
     self:onDispatcherRegisterReaderActions()
@@ -797,6 +798,19 @@ function Syncest:onCloseDocument()
             end
         end)
     end
+end
+
+-- Fires when a word is looked up (and potentially added to vocab builder).
+-- Debounce so rapid lookups batch into one push.
+function Syncest:onWordLookedUp()
+    if not self.settings.auto_sync or WebDavAuth:needsSetup(self.settings) then return end
+    if self.settings.auto_push_vocab == false then return end
+    if self._vocab_push_task then UIManager:unschedule(self._vocab_push_task) end
+    self._vocab_push_task = function()
+        self._vocab_push_task = nil
+        self:pushVocab(false, true)
+    end
+    UIManager:scheduleIn(2, self._vocab_push_task)
 end
 
 function Syncest:onPageUpdate(page)
