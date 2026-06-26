@@ -690,7 +690,7 @@ function Syncest:pushBookConfig(interactive, notify)
     if not interactive and now - self.last_sync_timestamp <= API_CALL_DEBOUNCE_DELAY then
         return
     end
-    if interactive and NetworkMgr:willRerunWhenOnline(
+    if NetworkMgr:willRerunWhenOnline(
             function() self:pushBookConfig(interactive) end) then
         return
     end
@@ -721,7 +721,7 @@ end
 -- ── Stats sync ─────────────────────────────────────────────────────
 
 function Syncest:pushBookStats(interactive, notify)
-    if interactive and NetworkMgr:willRerunWhenOnline(
+    if NetworkMgr:willRerunWhenOnline(
             function() self:pushBookStats(interactive) end) then
         return
     end
@@ -745,7 +745,7 @@ end
 -- ── Vocab sync ─────────────────────────────────────────────────────
 
 function Syncest:pushVocab(interactive, notify)
-    if interactive and NetworkMgr:willRerunWhenOnline(
+    if NetworkMgr:willRerunWhenOnline(
             function() self:pushVocab(interactive) end) then
         return
     end
