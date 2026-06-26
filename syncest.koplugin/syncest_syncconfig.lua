@@ -140,7 +140,6 @@ function SyncConfig:applyBookConfig(ui, config, force)
         if force or new_page > current_page then
             ui.link:addCurrentLocationToStack()
             ui:handleEvent(Event:new("GotoPage", new_page))
-            self:showSyncedMessage()
         end
     end
     if not has_pages and xpointer then
@@ -159,7 +158,6 @@ function SyncConfig:applyBookConfig(ui, config, force)
         if force or cmp_result > 0 then
             ui.link:addCurrentLocationToStack()
             ui:handleEvent(Event:new("GotoXPointer", working_xpointer))
-            self:showSyncedMessage()
         end
     end
 end
