@@ -450,21 +450,17 @@ function Syncest:addToMainMenu(menu_items)
                     enabled_func = function() return configured end,
                     callback = function() self:pullBookNotes(true, false, true) end,
                 },
-                {
-                    text = _("Full sync all annotations"),
-                    enabled_func = function() return configured end,
-                    callback = function() self:fullSyncBookNotes() end,
-                },
-                {
-                    text = _("Sync info"),
-                    callback = function() self:showSyncInfo() end,
-                    separator = true,
-                },
             }
             -- Insert after the 3 settings items (Configure, Auto sync, Sync settings)
             for i = #book_items, 1, -1 do
                 table.insert(items, 4, book_items[i])
             end
+            -- Sync info always at the very bottom
+            items[#items].separator = true
+            items[#items + 1] = {
+                text = _("Sync info"),
+                callback = function() self:showSyncInfo() end,
+            }
         end
 
         return items
