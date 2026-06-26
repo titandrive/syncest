@@ -36,8 +36,14 @@ end
 
 function WebDavSyncClient:_readJSON(rel_path)
     local tmp = tmp_path()
-    local code = WebDavApi:downloadFile(
+    socketutil:set_timeout(10, 30)
+    local ok, code = pcall(WebDavApi.downloadFile, WebDavApi,
         self:_url(rel_path), self.username, self.password, tmp)
+    socketutil:reset_timeout()
+    if not ok then
+        logger.warn("WebDavSyncClient _readJSON: network error for " .. rel_path .. ": " .. tostring(code))
+        return nil
+    end
     if code ~= 200 then
         logger.dbg("WebDavSyncClient _readJSON: " .. rel_path .. " → " .. tostring(code))
         return nil
@@ -68,8 +74,14 @@ function WebDavSyncClient:_writeJSON(rel_path, data)
     f:write(encoded)
     f:close()
     local full_url = self:_url(rel_path)
-    local code = WebDavApi:uploadFile(full_url, self.username, self.password, tmp)
+    socketutil:set_timeout(10, 30)
+    local ok2, code = pcall(WebDavApi.uploadFile, WebDavApi, full_url, self.username, self.password, tmp)
+    socketutil:reset_timeout()
     os.remove(tmp)
+    if not ok2 then
+        logger.warn("WebDavSyncClient _writeJSON: network error for " .. rel_path .. ": " .. tostring(code))
+        return false
+    end
     local success = type(code) == "number" and code >= 200 and code < 300
     if not success then
         logger.warn("WebDavSyncClient _writeJSON: upload failed code=" .. tostring(code) .. " url=" .. full_url)
@@ -79,8 +91,9 @@ end
 
 -- MKCOL, tolerating 405 (already exists) and 301/302 redirects.
 function WebDavSyncClient:_ensureFolder(rel_path)
-    local code = WebDavApi:createFolder(
+    local ok, code = pcall(WebDavApi.createFolder, WebDavApi,
         self:_url(rel_path), self.username, self.password, "")
+    if not ok then return false end
     return code == 201 or code == 405
 end
 
@@ -254,8 +267,9 @@ end
 
 function WebDavSyncClient:pushChanges(changes, callback)
     -- Ensure the base sync folder exists before writing anything.
-    local mkcol_code = WebDavApi:createFolder(self:_url(""), self.username, self.password, "")
-    if mkcol_code ~= 201 and mkcol_code ~= 405 then
+    local mkcol_ok, mkcol_code = pcall(WebDavApi.createFolder, WebDavApi,
+        self:_url(""), self.username, self.password, "")
+    if not mkcol_ok or (mkcol_code ~= 201 and mkcol_code ~= 405) then
         logger.warn("WebDavSyncClient pushChanges: failed to create base folder, code=" .. tostring(mkcol_code))
         callback(false, {}, mkcol_code)
         return
