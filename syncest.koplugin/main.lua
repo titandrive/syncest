@@ -500,9 +500,7 @@ function Syncest:ensureClient(interactive)
 end
 
 function Syncest:getBookIdentifiers()
-    local book_hash = SyncConfig:getDocumentIdentifier(self.ui)
-    local meta_hash = SyncConfig:getMetaHash(self.ui)
-    return book_hash, meta_hash
+    return SyncConfig:getDocumentIdentifier(self.ui)
 end
 
 function Syncest:showSyncInfo()
@@ -511,6 +509,7 @@ function Syncest:showSyncInfo()
         return
     end
     local info = SyncConfig:getMetadataHashInfo(self.ui)
+    local book_hash = SyncConfig:getDocumentIdentifier(self.ui)
     local doc_sync = self.ui.doc_settings:readSetting("webdav_sync") or {}
     local gs = G_reader_settings:readSetting("webdav_sync") or {}
     local placeholder = _("(none)")
@@ -527,7 +526,7 @@ function Syncest:showSyncInfo()
         return m > 0 and m or nil
     end
     local kv_pairs = {
-        { _("Book Fingerprint"), doc_sync.meta_hash_v1 or info.meta_hash or placeholder },
+        { _("Book Hash"),  book_hash or placeholder },
         { _("Title"),  info.title ~= "" and info.title or placeholder },
         { _("Author"), #info.authors > 0 and table.concat(info.authors, ", ") or placeholder },
         { _("Progress pushed"),    fmt(max_ts(doc_sync.last_pushed_at_config)) },
@@ -535,7 +534,6 @@ function Syncest:showSyncInfo()
         { _("Annotations pushed"), fmt(max_ts(doc_sync.last_pushed_at_notes)) },
         { _("Annotations pulled"), fmt(max_ts(doc_sync.last_synced_at_notes)) },
         { _("Stats pushed"),       fmt(gs.stats_last_pushed_at) },
-        { _("Catalog pushed"),     fmt(gs.catalog_last_pushed_at) },
     }
     UIManager:show(KeyValuePage:new{ title = _("Sync Info"), kv_pairs = kv_pairs })
 end
@@ -562,16 +560,16 @@ function Syncest:pushBookConfig(interactive, notify)
 end
 
 function Syncest:pullBookConfig(interactive, notify)
-    local book_hash, meta_hash = self:getBookIdentifiers()
-    if not book_hash or not meta_hash then return end
+    local book_hash = self:getBookIdentifiers()
+    if not book_hash then return end
     if NetworkMgr:willRerunWhenOnline(
-            function() self:pullBookConfig(interactive) end) then
+            function() self:pullBookConfig(interactive, notify) end) then
         return
     end
     local client = self:ensureClient(interactive)
     if not client then return end
     local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
-    SyncConfig:pull(self.ui, self.settings, client, book_hash, meta_hash,
+    SyncConfig:pull(self.ui, self.settings, client, book_hash,
         interactive, function() end, notify_fn)
 end
 
@@ -614,7 +612,7 @@ end
 
 function Syncest:pullVocab(interactive, notify)
     if NetworkMgr:willRerunWhenOnline(
-            function() self:pullVocab(interactive) end) then
+            function() self:pullVocab(interactive, notify) end) then
         return
     end
     local client = self:ensureClient(interactive)
@@ -637,16 +635,16 @@ function Syncest:pushBookNotes(interactive, full_sync, notify)
 end
 
 function Syncest:pullBookNotes(interactive, full_sync, notify)
-    local book_hash, meta_hash = self:getBookIdentifiers()
-    if not book_hash or not meta_hash then return end
+    local book_hash = self:getBookIdentifiers()
+    if not book_hash then return end
     if NetworkMgr:willRerunWhenOnline(
-            function() self:pullBookNotes(interactive, full_sync) end) then
+            function() self:pullBookNotes(interactive, full_sync, notify) end) then
         return
     end
     local client = self:ensureClient(interactive)
     if not client then return end
     local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
-    SyncAnnotations:pull(self.ui, self.settings, client, book_hash, meta_hash,
+    SyncAnnotations:pull(self.ui, self.settings, client, book_hash,
         self.dialog, interactive, full_sync, notify_fn)
 end
 
@@ -835,6 +833,10 @@ function Syncest:onCloseWidget()
     if self.delayed_push_task then
         UIManager:unschedule(self.delayed_push_task)
         self.delayed_push_task = nil
+    end
+    if self._vocab_push_task then
+        UIManager:unschedule(self._vocab_push_task)
+        self._vocab_push_task = nil
     end
 end
 

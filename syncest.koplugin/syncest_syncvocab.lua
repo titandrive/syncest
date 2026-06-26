@@ -83,19 +83,26 @@ function SyncVocab:applyWords(words)
     conn:exec("BEGIN;")
     local added = 0
 
-    local find_title   = conn:prepare("SELECT id FROM title WHERE name = ?")
-    local insert_title = conn:prepare("INSERT OR IGNORE INTO title (name, filter) VALUES (?, 1)")
-    local last_rowid   = conn:prepare("SELECT last_insert_rowid()")
-    local find_word    = conn:prepare("SELECT review_count, streak_count FROM vocabulary WHERE word = ?")
-    local insert_word  = conn:prepare([[
+    local ok_prep, find_title, insert_title, last_rowid, find_word, insert_word, update_word
+    ok_prep, find_title   = pcall(function() return conn:prepare("SELECT id FROM title WHERE name = ?") end)
+    if not ok_prep then conn:exec("ROLLBACK;") conn:close() return 0 end
+    ok_prep, insert_title = pcall(function() return conn:prepare("INSERT OR IGNORE INTO title (name, filter) VALUES (?, 1)") end)
+    if not ok_prep then conn:exec("ROLLBACK;") conn:close() return 0 end
+    ok_prep, last_rowid   = pcall(function() return conn:prepare("SELECT last_insert_rowid()") end)
+    if not ok_prep then conn:exec("ROLLBACK;") conn:close() return 0 end
+    ok_prep, find_word    = pcall(function() return conn:prepare("SELECT review_count, streak_count FROM vocabulary WHERE word = ?") end)
+    if not ok_prep then conn:exec("ROLLBACK;") conn:close() return 0 end
+    ok_prep, insert_word  = pcall(function() return conn:prepare([[
         INSERT OR IGNORE INTO vocabulary
         (word, title_id, create_time, review_time, due_time, review_count, streak_count, highlight, prev_context, next_context)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ]])
-    local update_word  = conn:prepare([[
+    ]]) end)
+    if not ok_prep then conn:exec("ROLLBACK;") conn:close() return 0 end
+    ok_prep, update_word  = pcall(function() return conn:prepare([[
         UPDATE vocabulary SET review_count = ?, streak_count = ?, review_time = ?, due_time = ?
         WHERE word = ?
-    ]])
+    ]]) end)
+    if not ok_prep then conn:exec("ROLLBACK;") conn:close() return 0 end
 
     for _, w in ipairs(words) do
         if not w.word then goto continue end

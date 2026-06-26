@@ -5,6 +5,8 @@
 
 local logger = require("logger")
 
+local WebDavAuth = require("webdav_auth")
+
 local M = {}
 
 M.URI_PREFIX = "readest-cloud://"
@@ -125,7 +127,7 @@ end
 function M.trigger_download(hash)
     if _cover_pending[hash] then return end
     if _missing_covers[hash] then return end
-    if not _opts or not _opts.settings or not _opts.settings.webdav_address then
+    if not _opts or not _opts.settings or WebDavAuth:needsSetup(_opts.settings) then
         logger.warn("WebDavSync cover skip: " .. tag_for(hash) .. " — WebDAV not configured")
         return
     end

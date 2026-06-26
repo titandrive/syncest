@@ -2,7 +2,6 @@ local Event = require("ui/event")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local util = require("util")
-local sha2 = require("ffi/sha2")
 local _ = require("syncest_i18n")
 
 local SyncConfig = {}
@@ -73,23 +72,7 @@ function SyncConfig:getMetadataHashInfo(ui)
         authors = authors_list,
         identifiers = identifiers_list,
         hash_source = hash_source,
-        meta_hash = sha2.md5(hash_source),
     }
-end
-
-function SyncConfig:generateMetadataHash(ui)
-    return self:getMetadataHashInfo(ui).meta_hash
-end
-
-function SyncConfig:getMetaHash(ui)
-    local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
-    local meta_hash = doc_readest_sync.meta_hash_v1
-    if not meta_hash then
-        meta_hash = self:generateMetadataHash(ui)
-        doc_readest_sync.meta_hash_v1 = meta_hash
-        ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
-    end
-    return meta_hash
 end
 
 function SyncConfig:getDocumentIdentifier(ui)
@@ -98,14 +81,12 @@ end
 
 function SyncConfig:getCurrentBookConfig(ui)
     local book_hash = self:getDocumentIdentifier(ui)
-    local meta_hash = self:getMetaHash(ui)
-    if not book_hash or not meta_hash then return nil end
+    if not book_hash then return nil end
 
     local config = {
-        bookHash = book_hash,
-        metaHash = meta_hash,
-        progress = "",
-        xpointer = "",
+        bookHash  = book_hash,
+        progress  = "",
+        xpointer  = "",
         updatedAt = os.time() * 1000,
     }
 
@@ -127,7 +108,10 @@ function SyncConfig:applyBookConfig(ui, config, force)
     local has_pages = ui.document.info.has_pages
     local progress_pattern = "^%[(%d+),(%d+)%]$"
     if has_pages and progress then
-        local page, _total_pages = progress:match(progress_pattern)
+        local progress_str = type(progress) == "table"
+            and ("[" .. tostring(progress[1]) .. "," .. tostring(progress[2]) .. "]")
+            or tostring(progress)
+        local page, _total_pages = progress_str:match(progress_pattern)
         local current_page = ui:getCurrentPage()
         local new_page = tonumber(page)
         if force or new_page > current_page then
@@ -148,7 +132,7 @@ function SyncConfig:applyBookConfig(ui, config, force)
                 break
             end
         end
-        if force or cmp_result > 0 then
+        if force or (cmp_result and cmp_result > 0) then
             ui.link:addCurrentLocationToStack()
             ui:handleEvent(Event:new("GotoXPointer", working_xpointer))
         end
@@ -184,13 +168,12 @@ function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp,
     return last_sync_timestamp
 end
 
-function SyncConfig:pull(ui, settings, client, book_hash, meta_hash, interactive, logout_fn, notify_fn)
+function SyncConfig:pull(ui, settings, client, book_hash, interactive, logout_fn, notify_fn)
     client:pullChanges(
         {
             since = 0,
             type = "configs",
             book = book_hash,
-            meta_hash = meta_hash,
         },
         function(success, response, status)
             if not success then

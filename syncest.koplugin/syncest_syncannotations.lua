@@ -68,7 +68,7 @@ end
 -- if the item isn't a syncable highlight/bookmark. Shared by the push walk
 -- (getAnnotations) and the deletion path (recordDeletion) so a note's id is
 -- derived identically however it was created.
-function SyncAnnotations:buildNoteDescriptor(item, book_hash, meta_hash)
+function SyncAnnotations:buildNoteDescriptor(item, book_hash)
     local note_text = item.note
     if note_text == "" then note_text = nil end
 
@@ -89,7 +89,6 @@ function SyncAnnotations:buildNoteDescriptor(item, book_hash, meta_hash)
         local id = item.id or self:generateNoteId(book_hash, "annotation", tostring(pos0), pos1 and tostring(pos1))
         return {
             bookHash = book_hash,
-            metaHash = meta_hash,
             id = id,
             type = "annotation",
             xpointer0 = tostring(pos0),
@@ -108,7 +107,6 @@ function SyncAnnotations:buildNoteDescriptor(item, book_hash, meta_hash)
         local id = item.id or self:generateNoteId(book_hash, "bookmark", page_xp)
         return {
             bookHash = book_hash,
-            metaHash = meta_hash,
             id = id,
             type = "bookmark",
             xpointer0 = page_xp,
@@ -122,7 +120,7 @@ function SyncAnnotations:buildNoteDescriptor(item, book_hash, meta_hash)
     return nil
 end
 
-function SyncAnnotations:getAnnotations(ui, settings, book_hash, meta_hash, full_sync)
+function SyncAnnotations:getAnnotations(ui, settings, book_hash, full_sync)
     local annotations = ui.annotation and ui.annotation.annotations
     if not annotations then return {} end
 
@@ -132,7 +130,7 @@ function SyncAnnotations:getAnnotations(ui, settings, book_hash, meta_hash, full
     for _, item in ipairs(annotations) do
         local updated_at = self:parseDatetimeToMs(item.datetime_updated or item.datetime)
         if updated_at > last_sync then
-            local note = self:buildNoteDescriptor(item, book_hash, meta_hash)
+            local note = self:buildNoteDescriptor(item, book_hash)
             if note then
                 notes[#notes + 1] = note
             end
@@ -223,7 +221,7 @@ function SyncAnnotations:recordDeletion(doc_settings, item)
     if not book_hash then return end
 
     local doc_readest_sync = doc_settings:readSetting("webdav_sync") or {}
-    local note = self:buildNoteDescriptor(item, book_hash, doc_readest_sync.meta_hash_v1)
+    local note = self:buildNoteDescriptor(item, book_hash)
     if not note then return end
     note.deletedAt = os.time() * 1000
 
@@ -239,11 +237,10 @@ end
 
 function SyncAnnotations:push(ui, settings, client, interactive, full_sync, notify_fn)
     local book_hash = ui.doc_settings:readSetting("partial_md5_checksum")
+    if not book_hash then return end
     local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
-    local meta_hash = doc_readest_sync.meta_hash_v1
-    if not book_hash or not meta_hash then return end
 
-    local annotations = self:getAnnotations(ui, settings, book_hash, meta_hash, full_sync)
+    local annotations = self:getAnnotations(ui, settings, book_hash, full_sync)
 
     -- Fold in tombstones for notes deleted locally since the last push. These
     -- are gone from ui.annotation.annotations, so getAnnotations can't see them;
@@ -252,7 +249,6 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
     local deleted_notes = doc_readest_sync.deleted_notes or {}
     for _, t in ipairs(deleted_notes) do
         t.bookHash = book_hash
-        t.metaHash = meta_hash
         annotations[#annotations + 1] = t
     end
 
@@ -286,15 +282,21 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
     )
 end
 
-function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog, interactive, full_sync, notify_fn)
-    if ui.document.info.has_pages then return end
+function SyncAnnotations:pull(ui, settings, client, book_hash, dialog, interactive, full_sync, notify_fn)
+    if ui.document.info.has_pages then
+        if interactive then
+            local InfoMessage = require("ui/widget/infomessage")
+            local UIManager = require("ui/uimanager")
+            UIManager:show(InfoMessage:new{ text = _("Annotation sync is not supported for PDF/CBZ documents."), timeout = 3 })
+        end
+        return
+    end
 
     client:pullChanges(
         {
             since = full_sync and 0 or (settings.last_notes_sync_at or 0),
             type = "notes",
             book = book_hash,
-            meta_hash = meta_hash,
         },
         function(success, response, status)
             if not success then return end

@@ -281,12 +281,17 @@ function WebDavSyncClient:pushChanges(changes, callback)
         if book_hash then
             self:_ensureFolder("sync")
             self:_ensureFolder("sync/" .. book_hash)
-            local remote = self:_readJSON("sync/" .. book_hash .. "/annotations.json")
-            local merged = self:_mergeNotes(
-                remote and remote.notes or {}, changes.notes)
-            if not self:_writeJSON("sync/" .. book_hash .. "/annotations.json",
-                    {notes = merged}) then
+            local ann_path = "sync/" .. book_hash .. "/annotations.json"
+            local remote = self:_readJSON(ann_path)
+            if remote == nil then
+                -- Can't read remote — abort rather than overwrite with local-only subset
+                logger.warn("WebDavSyncClient pushChanges: could not read remote annotations, skipping write")
                 ok = false
+            else
+                local merged = self:_mergeNotes(remote.notes or {}, changes.notes)
+                if not self:_writeJSON(ann_path, {notes = merged}) then
+                    ok = false
+                end
             end
         end
     end
