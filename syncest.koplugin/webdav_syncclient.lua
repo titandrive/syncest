@@ -9,12 +9,36 @@ local ltn12 = require("ltn12")
 
 local WebDavSyncClient = {}
 
+-- Quick TCP reachability check with a short timeout.
+-- Prevents the OS-level TCP SYN from hanging for 15+ seconds when
+-- Tailscale (or the network path to the server) is down.
+local function canReachServer(address, timeout)
+    if not address then return false end
+    local host, port = address:match("https?://([^/:]+):?(%d*)")
+    if not host then return false end
+    port = tonumber(port) or (address:match("^https") and 443 or 80)
+    local s = socket.tcp()
+    s:settimeout(timeout or 3)
+    local ok = s:connect(host, port)
+    s:close()
+    return ok ~= nil
+end
+
 function WebDavSyncClient:new(o)
     local t = setmetatable({}, { __index = self })
     t.server   = o.server
     t.username = o.server.username or ""
     t.password = o.server.password or ""
     return t
+end
+
+function WebDavSyncClient:_serverReachable()
+    local addr = self.server and self.server.address
+    local ok = canReachServer(addr, 3)
+    if not ok then
+        logger.warn("WebDavSyncClient: server unreachable, skipping sync: " .. tostring(addr))
+    end
+    return ok
 end
 
 -- ── URL helpers ────────────────────────────────────────────────────
@@ -222,6 +246,10 @@ end
 --     cover.png
 
 function WebDavSyncClient:pullChanges(params, callback)
+    if not self:_serverReachable() then
+        callback(false, {}, "unreachable")
+        return
+    end
     local t     = params.type
     local book  = params.book
     local since = tonumber(params.since) or 0
@@ -266,6 +294,10 @@ function WebDavSyncClient:pullChanges(params, callback)
 end
 
 function WebDavSyncClient:pushChanges(changes, callback)
+    if not self:_serverReachable() then
+        callback(false, {}, "unreachable")
+        return
+    end
     -- Ensure the base sync folder exists before writing anything.
     local mkcol_ok, mkcol_code = pcall(WebDavApi.createFolder, WebDavApi,
         self:_url(""), self.username, self.password, "")
