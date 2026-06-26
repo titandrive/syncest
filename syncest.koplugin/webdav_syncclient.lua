@@ -6,6 +6,11 @@ local http = require("socket.http")
 local socket = require("socket")
 local ltn12 = require("ltn12")
 
+-- LuaSocket reads http.TIMEOUT on every new TCP connection, so this caps
+-- the OS-level TCP connect + transfer time and prevents ANR crashes when
+-- the WebDAV server is unreachable (e.g. VPN is off).
+local SYNC_TIMEOUT = 4
+
 local WebDavSyncClient = {}
 
 function WebDavSyncClient:new(o)
@@ -35,8 +40,11 @@ end
 
 function WebDavSyncClient:_readJSON(rel_path)
     local tmp = tmp_path()
+    local prev_timeout = http.TIMEOUT
+    http.TIMEOUT = SYNC_TIMEOUT
     local ok, code = pcall(WebDavApi.downloadFile, WebDavApi,
         self:_url(rel_path), self.username, self.password, tmp)
+    http.TIMEOUT = prev_timeout
     if not ok then
         logger.warn("WebDavSyncClient _readJSON: network error for " .. rel_path .. ": " .. tostring(code))
         return nil
@@ -71,7 +79,10 @@ function WebDavSyncClient:_writeJSON(rel_path, data)
     f:write(encoded)
     f:close()
     local full_url = self:_url(rel_path)
+    local prev_timeout = http.TIMEOUT
+    http.TIMEOUT = SYNC_TIMEOUT
     local ok2, code = pcall(WebDavApi.uploadFile, WebDavApi, full_url, self.username, self.password, tmp)
+    http.TIMEOUT = prev_timeout
     os.remove(tmp)
     if not ok2 then
         logger.warn("WebDavSyncClient _writeJSON: network error for " .. rel_path .. ": " .. tostring(code))
@@ -86,8 +97,11 @@ end
 
 -- MKCOL, tolerating 405 (already exists) and 301/302 redirects.
 function WebDavSyncClient:_ensureFolder(rel_path)
+    local prev_timeout = http.TIMEOUT
+    http.TIMEOUT = SYNC_TIMEOUT
     local ok, code = pcall(WebDavApi.createFolder, WebDavApi,
         self:_url(rel_path), self.username, self.password, "")
+    http.TIMEOUT = prev_timeout
     if not ok then return false end
     return code == 201 or code == 405
 end
@@ -266,8 +280,11 @@ end
 
 function WebDavSyncClient:pushChanges(changes, callback)
     -- Ensure the base sync folder exists before writing anything.
+    local prev_timeout = http.TIMEOUT
+    http.TIMEOUT = SYNC_TIMEOUT
     local mkcol_ok, mkcol_code = pcall(WebDavApi.createFolder, WebDavApi,
         self:_url(""), self.username, self.password, "")
+    http.TIMEOUT = prev_timeout
     if not mkcol_ok or (mkcol_code ~= 201 and mkcol_code ~= 405) then
         logger.warn("WebDavSyncClient pushChanges: failed to create base folder, code=" .. tostring(mkcol_code))
         callback(false, {}, mkcol_code)
