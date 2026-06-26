@@ -219,13 +219,6 @@ function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp,
 end
 
 function SyncConfig:pull(ui, settings, client, book_hash, meta_hash, interactive, logout_fn, notify_fn)
-    if interactive then
-        UIManager:show(InfoMessage:new{
-            text = _("Pulling reading progress..."),
-            timeout = 1,
-        })
-    end
-
     client:pullChanges(
         {
             since = 0,
@@ -235,27 +228,10 @@ function SyncConfig:pull(ui, settings, client, book_hash, meta_hash, interactive
         },
         function(success, response, status)
             if not success then
-                -- Auth failure: server returns HTTP 403 with body
-                -- {error="Not authenticated"} per apps/readest-app/src/pages/api/sync.ts:31.
-                -- Check the status code primarily so future endpoints with
-                -- different body shapes still trigger relogin (codex finding).
                 local is_auth_fail = status == 401 or status == 403
                     or (response and response.error == "Not authenticated")
                 if is_auth_fail then
-                    if interactive then
-                        UIManager:show(InfoMessage:new{
-                            text = _("Authentication failed, please login again"),
-                            timeout = 2,
-                        })
-                    end
                     if logout_fn then logout_fn() end
-                    return
-                end
-                if interactive then
-                    UIManager:show(InfoMessage:new{
-                        text = _("Failed to pull reading progress"),
-                        timeout = 2,
-                    })
                 end
                 return
             end
@@ -273,15 +249,7 @@ function SyncConfig:pull(ui, settings, client, book_hash, meta_hash, interactive
                 local config = data[1]
                 if config then
                     self:applyBookConfig(ui, config, interactive)
-                    return
                 end
-            end
-
-            if interactive then
-                UIManager:show(InfoMessage:new{
-                    text = _("No saved reading progress found for this book"),
-                    timeout = 2,
-                })
             end
         end
     )
