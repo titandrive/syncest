@@ -112,8 +112,8 @@ local function process_queue()
                     local UIManager = require("ui/uimanager")
                     UIManager:nextTick(function()
                         _refresh_pending = false
-                        local ok, LibraryWidget = pcall(require, "library.librarywidget")
-                        if ok and LibraryWidget._menu then LibraryWidget.refresh() end
+                        local LibraryWidget = package.loaded["syncest_lib.librarywidget"]
+                        if LibraryWidget and LibraryWidget._menu then LibraryWidget.refresh() end
                     end)
                 end
             end
