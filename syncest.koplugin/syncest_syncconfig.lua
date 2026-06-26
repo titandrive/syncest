@@ -273,12 +273,6 @@ function SyncConfig:pull(ui, settings, client, book_hash, meta_hash, interactive
                 local config = data[1]
                 if config then
                     self:applyBookConfig(ui, config, interactive)
-                    if interactive then
-                        UIManager:show(InfoMessage:new{
-                            text = _("Reading progress synchronized"),
-                            timeout = 2,
-                        })
-                    end
                     return
                 end
             end
