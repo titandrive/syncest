@@ -374,6 +374,30 @@ function Syncest:addToMainMenu(menu_items)
                         end,
                     },
                     {
+                        text = _("Push vocab on word lookup"),
+                        enabled_func = function() return self.settings.auto_sync end,
+                        checked_func = function()
+                            return self.settings.auto_push_vocab ~= false
+                        end,
+                        callback = function()
+                            self.settings.auto_push_vocab =
+                                self.settings.auto_push_vocab == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Pull vocab on book open"),
+                        enabled_func = function() return self.settings.auto_sync end,
+                        checked_func = function()
+                            return self.settings.auto_pull_vocab ~= false
+                        end,
+                        callback = function()
+                            self.settings.auto_pull_vocab =
+                                self.settings.auto_pull_vocab == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
                         text = _("Sync book catalog on book close"),
                         enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
