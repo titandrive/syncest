@@ -256,9 +256,10 @@ end
 -- ── Menu ───────────────────────────────────────────────────────────
 
 function Syncest:addToMainMenu(menu_items)
-    menu_items.syncest = {
-        text = _("Syncest"),
-        sub_item_table = {
+    local function syncest_menu_items()
+        local configured = not WebDavAuth:needsSetup(self.settings)
+        local in_book = self.ui.document ~= nil
+        local items = {
             {
                 text_func = function()
                     if WebDavAuth:needsSetup(self.settings) then
@@ -387,106 +388,91 @@ function Syncest:addToMainMenu(menu_items)
                 },
                 separator = true,
             },
-            -- ── Reading Progress & Annotations ──────────────────────
-            {
-                text = _("Push reading progress now"),
-                show_func = function() return self.ui.document ~= nil end,
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
-                callback = function() self:pushBookConfig(true, true) end,
-            },
-            {
-                text = _("Pull reading progress now"),
-                show_func = function() return self.ui.document ~= nil end,
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
-                callback = function() self:pullBookConfig(true, true) end,
-            },
-            {
-                text = _("Push annotations now"),
-                show_func = function() return self.ui.document ~= nil end,
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
-                callback = function() self:pushBookNotes(true, true, true) end,
-            },
-            {
-                text = _("Pull annotations now"),
-                show_func = function() return self.ui.document ~= nil end,
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
-                callback = function() self:pullBookNotes(true, false, true) end,
-            },
-            {
-                text = _("Full sync all annotations"),
-                show_func = function() return self.ui.document ~= nil end,
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
-                callback = function() self:fullSyncBookNotes() end,
-            },
-            {
-                text = _("Sync info"),
-                show_func = function() return self.ui.document ~= nil end,
-                callback = function() self:showSyncInfo() end,
-                separator = true,
-            },
             -- ── Library & Books ─────────────────────────────────────
             {
                 text = _("Syncest Library"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
+                enabled_func = function() return configured end,
                 callback = function() self:openLibrary() end,
             },
             {
                 text = _("Push books now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
+                enabled_func = function() return configured end,
                 callback = function() self:syncBooksLibrary("push", true) end,
             },
             {
                 text = _("Pull books now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
+                enabled_func = function() return configured end,
                 callback = function() self:syncBooksLibrary("pull", true) end,
                 separator = true,
             },
             -- ── Stats & Vocab ───────────────────────────────────────
             {
                 text = _("Push stats now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
+                enabled_func = function() return configured end,
                 callback = function() self:pushBookStats(true, true) end,
             },
             {
                 text = _("Pull stats now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
+                enabled_func = function() return configured end,
                 callback = function() self:pullBookStats(true, true) end,
             },
             {
                 text = _("Push vocab now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
+                enabled_func = function() return configured end,
                 callback = function() self:pushVocab(true, true) end,
             },
             {
                 text = _("Pull vocab now"),
-                enabled_func = function()
-                    return not WebDavAuth:needsSetup(self.settings)
-                end,
+                enabled_func = function() return configured end,
                 callback = function() self:pullVocab(true, true) end,
             },
         }
+
+        if in_book then
+            local book_items = {
+                {
+                    text = _("Push reading progress now"),
+                    enabled_func = function() return configured end,
+                    callback = function() self:pushBookConfig(true, true) end,
+                },
+                {
+                    text = _("Pull reading progress now"),
+                    enabled_func = function() return configured end,
+                    callback = function() self:pullBookConfig(true, true) end,
+                },
+                {
+                    text = _("Push annotations now"),
+                    enabled_func = function() return configured end,
+                    callback = function() self:pushBookNotes(true, true, true) end,
+                },
+                {
+                    text = _("Pull annotations now"),
+                    enabled_func = function() return configured end,
+                    callback = function() self:pullBookNotes(true, false, true) end,
+                },
+                {
+                    text = _("Full sync all annotations"),
+                    enabled_func = function() return configured end,
+                    callback = function() self:fullSyncBookNotes() end,
+                },
+                {
+                    text = _("Sync info"),
+                    callback = function() self:showSyncInfo() end,
+                    separator = true,
+                },
+            }
+            -- Insert book items at position 1 (before Library section)
+            for i = #book_items, 1, -1 do
+                table.insert(items, 1, book_items[i])
+            end
+        end
+
+        return items
+    end
+
+    menu_items.syncest = {
+        text = _("Syncest"),
+        sub_item_table_func = syncest_menu_items,
     }
 end
 
