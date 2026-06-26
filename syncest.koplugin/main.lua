@@ -461,9 +461,9 @@ function Syncest:addToMainMenu(menu_items)
                     separator = true,
                 },
             }
-            -- Insert book items at position 1 (before Library section)
+            -- Insert after the 3 settings items (Configure, Auto sync, Sync settings)
             for i = #book_items, 1, -1 do
-                table.insert(items, 1, book_items[i])
+                table.insert(items, 4, book_items[i])
             end
         end
 
