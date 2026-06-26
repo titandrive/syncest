@@ -252,7 +252,6 @@ end
 
 function Syncest:addToMainMenu(menu_items)
     menu_items.aa_syncest = {
-        sorting_hint = "tools",
         text = _("Syncest"),
         sub_item_table = {
             {
