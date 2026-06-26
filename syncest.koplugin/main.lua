@@ -393,14 +393,14 @@ function Syncest:addToMainMenu(menu_items)
                 enabled_func = function()
                     return not WebDavAuth:needsSetup(self.settings)
                 end,
-                callback = function() self:pushBookStats(true) end,
+                callback = function() self:pushBookStats(true, true) end,
             },
             {
                 text = _("Pull stats now"),
                 enabled_func = function()
                     return not WebDavAuth:needsSetup(self.settings)
                 end,
-                callback = function() self:pullBookStats(true) end,
+                callback = function() self:pullBookStats(true, true) end,
             },
             {
                 text = _("Push books now"),
@@ -423,7 +423,7 @@ function Syncest:addToMainMenu(menu_items)
                     return not WebDavAuth:needsSetup(self.settings)
                         and self.ui.document ~= nil
                 end,
-                callback = function() self:pushBookConfig(true) end,
+                callback = function() self:pushBookConfig(true, true) end,
             },
             {
                 text = _("Pull reading progress now"),
@@ -431,7 +431,7 @@ function Syncest:addToMainMenu(menu_items)
                     return not WebDavAuth:needsSetup(self.settings)
                         and self.ui.document ~= nil
                 end,
-                callback = function() self:pullBookConfig(true) end,
+                callback = function() self:pullBookConfig(true, true) end,
                 separator = true,
             },
             {
@@ -440,7 +440,7 @@ function Syncest:addToMainMenu(menu_items)
                     return not WebDavAuth:needsSetup(self.settings)
                         and self.ui.document ~= nil
                 end,
-                callback = function() self:pushBookNotes(true, true) end,
+                callback = function() self:pushBookNotes(true, true, true) end,
             },
             {
                 text = _("Pull annotations now"),
@@ -448,7 +448,7 @@ function Syncest:addToMainMenu(menu_items)
                     return not WebDavAuth:needsSetup(self.settings)
                         and self.ui.document ~= nil
                 end,
-                callback = function() self:pullBookNotes(true) end,
+                callback = function() self:pullBookNotes(true, false, true) end,
             },
             {
                 text = _("Full sync all annotations"),
@@ -610,8 +610,8 @@ function Syncest:pullBookNotes(interactive, full_sync, notify)
 end
 
 function Syncest:fullSyncBookNotes()
-    self:pushBookNotes(true, true)
-    self:pullBookNotes(true, true)
+    self:pushBookNotes(true, true, true)
+    self:pullBookNotes(true, true, true)
 end
 
 -- ── Library ────────────────────────────────────────────────────────
@@ -726,10 +726,10 @@ function Syncest:onSyncestToggleAutoSync(toggle)
     end
 end
 
-function Syncest:onSyncestPushProgress()    self:pushBookConfig(true)    end
-function Syncest:onSyncestPullProgress()    self:pullBookConfig(true)    end
-function Syncest:onSyncestPushAnnotations() self:pushBookNotes(true)     end
-function Syncest:onSyncestPullAnnotations() self:pullBookNotes(true)     end
+function Syncest:onSyncestPushProgress()    self:pushBookConfig(true, true)       end
+function Syncest:onSyncestPullProgress()    self:pullBookConfig(true, true)       end
+function Syncest:onSyncestPushAnnotations() self:pushBookNotes(true, false, true) end
+function Syncest:onSyncestPullAnnotations() self:pullBookNotes(true, false, true) end
 function Syncest:onSyncestOpenLibrary()     self:openLibrary()           end
 function Syncest:onSyncestPushBooks()       self:syncBooksLibrary("push", true) end
 function Syncest:onSyncestPullBooks()       self:syncBooksLibrary("pull", true) end
