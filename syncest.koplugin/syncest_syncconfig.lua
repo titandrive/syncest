@@ -127,7 +127,7 @@ function SyncConfig:getCurrentBookConfig(ui)
     return config
 end
 
-function SyncConfig:applyBookConfig(ui, config)
+function SyncConfig:applyBookConfig(ui, config, force)
     logger.dbg("ReadestSync: Applying book config:", config)
     local xpointer = config.xpointer
     local progress = config.progress
@@ -137,7 +137,7 @@ function SyncConfig:applyBookConfig(ui, config)
         local page, _total_pages = progress:match(progress_pattern)
         local current_page = ui:getCurrentPage()
         local new_page = tonumber(page)
-        if new_page > current_page then
+        if force or new_page > current_page then
             ui.link:addCurrentLocationToStack()
             ui:handleEvent(Event:new("GotoPage", new_page))
             self:showSyncedMessage()
@@ -156,7 +156,7 @@ function SyncConfig:applyBookConfig(ui, config)
                 break
             end
         end
-        if cmp_result > 0 then
+        if force or cmp_result > 0 then
             ui.link:addCurrentLocationToStack()
             ui:handleEvent(Event:new("GotoXPointer", working_xpointer))
             self:showSyncedMessage()
@@ -274,7 +274,7 @@ function SyncConfig:pull(ui, settings, client, book_hash, meta_hash, interactive
             if data and #data > 0 then
                 local config = data[1]
                 if config then
-                    self:applyBookConfig(ui, config)
+                    self:applyBookConfig(ui, config, interactive)
                     if interactive then
                         UIManager:show(InfoMessage:new{
                             text = _("Reading progress synchronized"),
