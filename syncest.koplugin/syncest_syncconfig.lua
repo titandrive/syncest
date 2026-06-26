@@ -1,5 +1,4 @@
 local Event = require("ui/event")
-local InfoMessage = require("ui/widget/infomessage")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local util = require("util")
@@ -100,13 +99,7 @@ end
 function SyncConfig:getCurrentBookConfig(ui)
     local book_hash = self:getDocumentIdentifier(ui)
     local meta_hash = self:getMetaHash(ui)
-    if not book_hash or not meta_hash then
-        UIManager:show(InfoMessage:new{
-            text = _("Cannot identify the current book"),
-            timeout = 2,
-        })
-        return nil
-    end
+    if not book_hash or not meta_hash then return nil end
 
     local config = {
         bookHash = book_hash,
@@ -162,23 +155,9 @@ function SyncConfig:applyBookConfig(ui, config, force)
     end
 end
 
-function SyncConfig:showSyncedMessage()
-    UIManager:show(InfoMessage:new{
-        text = _("Progress has been synchronized."),
-        timeout = 3,
-    })
-end
-
 function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp, notify_fn)
     local config = self:getCurrentBookConfig(ui)
     if not config then return last_sync_timestamp end
-
-    if interactive then
-        UIManager:show(InfoMessage:new{
-            text = _("Pushing reading progress..."),
-            timeout = 1,
-        })
-    end
 
     local payload = {
         books = {},
@@ -189,19 +168,6 @@ function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp,
     client:pushChanges(
         payload,
         function(success, _response)
-            if interactive then
-                if success then
-                    UIManager:show(InfoMessage:new{
-                        text = _("Reading progress pushed successfully"),
-                        timeout = 2,
-                    })
-                else
-                    UIManager:show(InfoMessage:new{
-                        text = _("Failed to push reading progress"),
-                        timeout = 2,
-                    })
-                end
-            end
             if success and ui.doc_settings then
                 local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
                 doc_readest_sync.last_pushed_at_config = os.time()

@@ -96,9 +96,6 @@ function SyncStats:push(settings, client, interactive, notify_fn)
         .. " interactive=" .. tostring(interactive))
     if #pages == 0 then
         logger.dbg("ReadestStats push: nothing to push (no page events past cursor)")
-        if interactive then
-            UIManager:show(InfoMessage:new{ text = _("Reading statistics are up to date"), timeout = 2 })
-        end
         return
     end
     local max_start = cursor
@@ -119,15 +116,9 @@ function SyncStats:push(settings, client, interactive, notify_fn)
                 settings.stats_last_pushed_at = os.time()
                 G_reader_settings:saveSetting("webdav_sync", settings)
                 logger.dbg("ReadestStats push: cursor advanced to " .. tostring(max_start))
-                if interactive then
-                    UIManager:show(InfoMessage:new{ text = _("Reading statistics pushed"), timeout = 2 })
-                end
                 if notify_fn then notify_fn("stats") end
             else
                 logger.dbg("ReadestStats push: failed, cursor unchanged; body=" .. tostring(body))
-                if interactive then
-                    UIManager:show(InfoMessage:new{ text = _("Failed to push reading statistics"), timeout = 2 })
-                end
             end
         end)
 end
@@ -146,9 +137,6 @@ function SyncStats:pull(settings, client, interactive, logout_fn, notify_fn)
                 if status == 401 or status == 403 then
                     if logout_fn then logout_fn() end
                 end
-                if interactive then
-                    UIManager:show(InfoMessage:new{ text = _("Failed to pull reading statistics"), timeout = 2 })
-                end
                 return
             end
             local nbooks = response and response.statBooks and #response.statBooks or 0
@@ -166,11 +154,6 @@ function SyncStats:pull(settings, client, interactive, logout_fn, notify_fn)
                 logger.dbg("ReadestStats pull: cursor advanced to " .. tostring(newest))
             else
                 logger.dbg("ReadestStats pull: cursor unchanged (no newer rows)")
-            end
-            if interactive then
-                local text = npages > 0 and _("Reading statistics pulled")
-                    or _("Reading statistics are up to date")
-                UIManager:show(InfoMessage:new{ text = text, timeout = 2 })
             end
             if notify_fn then notify_fn("stats") end
         end)

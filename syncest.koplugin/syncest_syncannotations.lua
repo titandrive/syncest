@@ -256,22 +256,7 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
         annotations[#annotations + 1] = t
     end
 
-    if #annotations == 0 then
-        if interactive then
-            UIManager:show(InfoMessage:new{
-                text = _("No annotations to push"),
-                timeout = 2,
-            })
-        end
-        return
-    end
-
-    if interactive then
-        UIManager:show(InfoMessage:new{
-            text = _("Pushing annotations..."),
-            timeout = 1,
-        })
-    end
+    if #annotations == 0 then return end
 
     local payload = {
         books = {},
@@ -283,19 +268,6 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
     client:pushChanges(
         payload,
         function(success, _response)
-            if interactive then
-                if success then
-                    UIManager:show(InfoMessage:new{
-                        text = T(_("%1 annotations pushed successfully"), #annotations),
-                        timeout = 2,
-                    })
-                else
-                    UIManager:show(InfoMessage:new{
-                        text = _("Failed to push annotations"),
-                        timeout = 2,
-                    })
-                end
-            end
             if success then
                 settings.last_notes_sync_at = os.time() * 1000
                 G_reader_settings:saveSetting("webdav_sync", settings)
@@ -315,22 +287,7 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
 end
 
 function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog, interactive, full_sync, notify_fn)
-    if ui.document.info.has_pages then
-        if interactive then
-            UIManager:show(InfoMessage:new{
-                text = _("Annotation sync is not supported for PDF documents"),
-                timeout = 3,
-            })
-        end
-        return
-    end
-
-    if interactive then
-        UIManager:show(InfoMessage:new{
-            text = full_sync and _("Full sync: pulling all annotations...") or _("Pulling annotations..."),
-            timeout = 1,
-        })
-    end
+    if ui.document.info.has_pages then return end
 
     client:pullChanges(
         {
@@ -340,34 +297,10 @@ function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog
             meta_hash = meta_hash,
         },
         function(success, response, status)
-            if not success then
-                -- Treat HTTP 401/403 as auth failure regardless of body shape
-                -- so a future server tweak to the error string doesn't
-                -- silently turn relogin into "Failed to pull annotations"
-                -- noise (codex round 1 finding 15).
-                local is_auth_fail = status == 401 or status == 403
-                    or (response and response.error == "Not authenticated")
-                if interactive then
-                    UIManager:show(InfoMessage:new{
-                        text = is_auth_fail
-                            and _("Authentication failed, please login again")
-                            or _("Failed to pull annotations"),
-                        timeout = 2,
-                    })
-                end
-                return
-            end
+            if not success then return end
 
             local data = response.notes
-            if not data or #data == 0 then
-                if interactive then
-                    UIManager:show(InfoMessage:new{
-                        text = _("No new annotations found"),
-                        timeout = 2,
-                    })
-                end
-                return
-            end
+            if not data or #data == 0 then return end
 
             logger.dbg("ReadestSync: Pulled annotations from sync:", #data)
             local annotation_mgr = ui.annotation
@@ -495,13 +428,6 @@ function SyncAnnotations:pull(ui, settings, client, book_hash, meta_hash, dialog
                 doc_readest_sync.last_synced_at_notes = os.time()
                 ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
                 ui.doc_settings:flush()
-            end
-
-            if interactive then
-                UIManager:show(InfoMessage:new{
-                    text = T(_("%1 annotations pulled"), added),
-                    timeout = 2,
-                })
             end
 
             if added > 0 or removed > 0 then
