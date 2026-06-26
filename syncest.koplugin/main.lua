@@ -930,7 +930,8 @@ function Syncest:onCloseDocument()
             if self.settings.auto_push_stats ~= false then
                 self:pushBookStats(false, true)
             end
-            if self.settings.auto_push_vocab ~= false then
+            if self.settings.auto_push_vocab ~= false and self._vocab_dirty then
+                self._vocab_dirty = false
                 self:pushVocab(false, true)
             end
         end)
@@ -942,6 +943,7 @@ end
 function Syncest:onWordLookedUp()
     if not self.settings.auto_sync or WebDavAuth:needsSetup(self.settings) then return end
     if self.settings.auto_push_vocab == false then return end
+    self._vocab_dirty = true
     if self._vocab_push_task then UIManager:unschedule(self._vocab_push_task) end
     self._vocab_push_task = function()
         self._vocab_push_task = nil
