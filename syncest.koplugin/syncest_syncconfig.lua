@@ -90,12 +90,13 @@ function SyncConfig:getCurrentBookConfig(ui)
         updatedAt = os.time() * 1000,
     }
 
+    if not ui.document then return nil end
     local current_page = ui:getCurrentPage()
     local page_count = ui.document:getPageCount()
     config.progress = {current_page, page_count}
 
     if not ui.document.info.has_pages then
-        config.xpointer = ui.rolling:getLastProgress()
+        config.xpointer = ui.rolling and ui.rolling:getLastProgress() or ""
     end
 
     return config

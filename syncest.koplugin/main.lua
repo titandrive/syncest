@@ -6,8 +6,25 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
+local socket = require("socket")
 local T = require("ffi/util").template
 local _ = require("gettext")
+
+local function serverReachable(address, timeout)
+    local host = (address or ""):match("https?://([^/:]+)")
+    if not host then return false end
+    local port = tonumber((address or ""):match("//[^/]*:(%d+)"))
+        or ((address or ""):match("^https://") and 443 or 80)
+    local ok, connected = pcall(function()
+        local s = socket.tcp()
+        if not s then return false end
+        s:settimeout(timeout or 1)
+        local result = s:connect(host, port)
+        s:close()
+        return result == 1
+    end)
+    return ok and connected == true
+end
 
 local WebDavAuth = require("webdav_auth")
 local SyncConfig = require("syncest_syncconfig")
@@ -919,7 +936,9 @@ function Syncest:onSyncestPullBooks()       self:syncBooksLibrary("pull", true) 
 
 function Syncest:onCloseDocument()
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
-        NetworkMgr:goOnlineToRun(function()
+        local addr = self.settings.sync_server and self.settings.sync_server.address
+        if not serverReachable(addr, 1) then return end
+        pcall(function()
             if self.settings.auto_push_progress ~= false then
                 self:pushBookConfig(false, true)
             end
