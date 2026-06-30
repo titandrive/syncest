@@ -489,16 +489,17 @@ function Syncest:addToMainMenu(menu_items)
                         end,
                         hold_callback = function()
                             local menu_widget
-                            pcall(function()
-                                local stack = UIManager._window_stack
+                            local stack = UIManager._window_stack
+                            if stack then
                                 for i = #stack, 1, -1 do
-                                    local w = stack[i] and stack[i].widget
+                                    local entry = stack[i]
+                                    local w = entry and (entry.widget or entry)
                                     if w and type(w.updateItems) == "function" then
                                         menu_widget = w
                                         break
                                     end
                                 end
-                            end)
+                            end
                             local SpinWidget = require("ui/widget/spinwidget")
                             UIManager:show(SpinWidget:new{
                                 title_text = _("Push every X pages"),
@@ -511,9 +512,7 @@ function Syncest:addToMainMenu(menu_items)
                                     self.settings.push_page_interval = spin.value
                                     G_reader_settings:saveSetting("webdav_sync", self.settings)
                                     if menu_widget then
-                                        UIManager:nextTick(function()
-                                            pcall(function() menu_widget:updateItems() end)
-                                        end)
+                                        UIManager:close(menu_widget)
                                     end
                                 end,
                             })
