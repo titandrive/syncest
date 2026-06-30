@@ -21,6 +21,23 @@ function WebDavSyncClient:new(o)
     return t
 end
 
+function WebDavSyncClient:_serverReachable()
+    local addr = self.server and self.server.address or ""
+    local host = addr:match("https?://([^/:]+)")
+    if not host then return false end
+    local port = tonumber(addr:match("//[^/]*:(%d+)"))
+        or (addr:match("^https://") and 443 or 80)
+    local ok, connected = pcall(function()
+        local s = socket.tcp()
+        if not s then return false end
+        s:settimeout(1)
+        local result = s:connect(host, port)
+        s:close()
+        return result == 1
+    end)
+    return ok and connected == true
+end
+
 -- ── URL helpers ────────────────────────────────────────────────────
 
 function WebDavSyncClient:_url(rel_path)
@@ -104,20 +121,6 @@ function WebDavSyncClient:_ensureFolder(rel_path)
     http.TIMEOUT = prev_timeout
     if not ok then return false end
     return code == 201 or code == 405
-end
-
--- DELETE a single URL (file or collection). Returns HTTP status code.
-function WebDavSyncClient:_delete(rel_path)
-    socketutil:set_timeout()
-    local code = socket.skip(1, http.request{
-        url      = self:_url(rel_path),
-        method   = "DELETE",
-        user     = self.username,
-        password = self.password,
-        sink     = ltn12.sink.null(),
-    })
-    socketutil:reset_timeout()
-    return code
 end
 
 -- ── Merge helpers ──────────────────────────────────────────────────
