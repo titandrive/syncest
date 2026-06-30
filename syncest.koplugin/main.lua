@@ -62,6 +62,8 @@ Syncest.default_settings = {
     auto_sync                = false,
     -- Granular auto sync flags (all default on; only meaningful when auto_sync=true)
     auto_push_progress       = true,
+    push_every_x_pages       = false,
+    push_page_interval       = 10,
     auto_pull_progress       = true,
     auto_push_annotations    = true,
     auto_pull_annotations    = true,
@@ -100,6 +102,7 @@ end
 
 function Syncest:init()
     self.last_sync_timestamp = 0
+    self._last_pushed_page = nil
     self.settings = G_reader_settings:readSetting("webdav_sync", self.default_settings)
 
     -- Migrate pre-SyncService settings (webdav_address/username/password → sync_server)
@@ -175,6 +178,7 @@ function Syncest:onReaderReady()
             UIManager:scheduleIn(0.3, function() self:pullVocab(false, true) end)
         end
     end
+    self._last_pushed_page = nil
     self:onDispatcherRegisterReaderActions()
 end
 
@@ -467,6 +471,51 @@ function Syncest:addToMainMenu(menu_items)
                             self.settings.auto_push_progress =
                                 self.settings.auto_push_progress == false
                             G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text_func = function()
+                            local n = self.settings.push_page_interval or 10
+                            return T(_("Push every %1 pages (hold to change)"), n)
+                        end,
+                        enabled_func = function() return self.settings.auto_sync end,
+                        checked_func = function()
+                            return self.settings.push_every_x_pages == true
+                        end,
+                        callback = function()
+                            self.settings.push_every_x_pages =
+                                not self.settings.push_every_x_pages
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                        hold_callback = function()
+                            local menu_widget
+                            local stack = UIManager._window_stack
+                            if stack then
+                                for i = #stack, 1, -1 do
+                                    local entry = stack[i]
+                                    local w = entry and (entry.widget or entry)
+                                    if w and type(w.updateItems) == "function" then
+                                        menu_widget = w
+                                        break
+                                    end
+                                end
+                            end
+                            local SpinWidget = require("ui/widget/spinwidget")
+                            UIManager:show(SpinWidget:new{
+                                title_text = _("Push every X pages"),
+                                value = self.settings.push_page_interval or 10,
+                                value_min = 1,
+                                value_max = 500,
+                                value_step = 1,
+                                ok_always_enabled = true,
+                                callback = function(spin)
+                                    self.settings.push_page_interval = spin.value
+                                    G_reader_settings:saveSetting("webdav_sync", self.settings)
+                                    if menu_widget then
+                                        UIManager:close(menu_widget)
+                                    end
+                                end,
+                            })
                         end,
                     },
                     {
@@ -971,8 +1020,10 @@ function Syncest:onWordLookedUp()
 end
 
 function Syncest:onPageUpdate(page)
-    if self.settings.auto_sync and self.settings.auto_push_progress ~= false
-            and not WebDavAuth:needsSetup(self.settings) and page then
+    if not self.settings.auto_sync or WebDavAuth:needsSetup(self.settings) or not page then
+        return
+    end
+    if self.settings.auto_push_progress ~= false then
         if self.delayed_push_task then
             UIManager:unschedule(self.delayed_push_task)
         end
@@ -980,6 +1031,21 @@ function Syncest:onPageUpdate(page)
             self:pushBookConfig(false)
         end
         UIManager:scheduleIn(5, self.delayed_push_task)
+    end
+    if self.settings.push_every_x_pages == true then
+        local interval = self.settings.push_page_interval or 10
+        if self._last_pushed_page == nil
+                or math.abs(page - self._last_pushed_page) >= interval then
+            self._last_pushed_page = page
+            if self.x_page_push_task then
+                UIManager:unschedule(self.x_page_push_task)
+            end
+            self.x_page_push_task = function()
+                self.x_page_push_task = nil
+                self:pushBookConfig(false, false)
+            end
+            UIManager:scheduleIn(5, self.x_page_push_task)
+        end
     end
 end
 
@@ -998,6 +1064,10 @@ function Syncest:onCloseWidget()
     if self.delayed_push_task then
         UIManager:unschedule(self.delayed_push_task)
         self.delayed_push_task = nil
+    end
+    if self.x_page_push_task then
+        UIManager:unschedule(self.x_page_push_task)
+        self.x_page_push_task = nil
     end
     if self._vocab_push_task then
         UIManager:unschedule(self._vocab_push_task)
