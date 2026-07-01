@@ -1294,6 +1294,22 @@ function Syncest:addToMainMenu(menu_items)
                 callback = function() self:syncBooksLibrary("pull", true) end,
                 separator = true,
             },
+            -- ── Push/Pull All ───────────────────────────────────────
+            {
+                text = _("Sync all"),
+                enabled_func = function() return false end,
+            },
+            {
+                text = _("Push all now"),
+                enabled_func = function() return configured end,
+                callback = function() self:pushAll(true) end,
+            },
+            {
+                text = _("Pull all now"),
+                enabled_func = function() return configured end,
+                callback = function() self:pullAll(true) end,
+                separator = true,
+            },
             -- ── Stats & Vocab ───────────────────────────────────────
             {
                 text = _("Push stats now"),
@@ -1606,6 +1622,32 @@ function Syncest:pullBookNotes(interactive, full_sync, notify)
     local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
     SyncAnnotations:pull(self.ui, self.settings, client, book_hash,
         self.dialog, interactive, full_sync, notify_fn)
+end
+
+function Syncest:pushAll(interactive)
+    self:_runSafely("push all", function()
+        local in_book = self.ui and self.ui.document
+        if in_book then
+            self:pushBookConfigAsync(true)
+            self:pushBookNotes(false, true, true)
+        end
+        self:pushBookStats(false, true)
+        self:pushVocab(false, true)
+        self:syncBooksLibrary("push", interactive)
+    end, interactive)
+end
+
+function Syncest:pullAll(interactive)
+    self:_runSafely("pull all", function()
+        local in_book = self.ui and self.ui.document
+        if in_book then
+            self:pullBookConfigAsync(true, true)
+            self:pullBookNotes(false, false, true)
+        end
+        self:pullBookStats(false, true)
+        self:pullVocab(false, true)
+        self:syncBooksLibrary("pull", interactive)
+    end, interactive)
 end
 
 function Syncest:fullSyncBookNotes()
