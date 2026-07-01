@@ -118,7 +118,7 @@ function Syncest:_runSafely(label, fn, interactive)
     return false
 end
 
-function Syncest:_runBackgroundJSON(label, result_prefix, child_fn, on_complete)
+function Syncest:_runBackgroundJSON(label, result_prefix, child_fn, on_complete, on_failure)
     if not self._background_jobs then self._background_jobs = {} end
     if self._background_jobs[label] then
         logger.info("Syncest " .. label .. ": already running, skipped")
@@ -146,6 +146,7 @@ function Syncest:_runBackgroundJSON(label, result_prefix, child_fn, on_complete)
         logger.warn("Syncest " .. label .. ": launch failed "
             .. tostring(pid_or_err))
         os.remove(result_file)
+        if on_failure then on_failure("launch failed") end
         return false
     end
 
@@ -164,6 +165,7 @@ function Syncest:_runBackgroundJSON(label, result_prefix, child_fn, on_complete)
             logger.warn("Syncest " .. label .. ": timed out")
             self._background_jobs[label] = nil
             os.remove(result_file)
+            if on_failure then on_failure("timed out") end
             return
         end
 
@@ -172,9 +174,13 @@ function Syncest:_runBackgroundJSON(label, result_prefix, child_fn, on_complete)
         if not result or result.success ~= true then
             logger.warn("Syncest " .. label .. ": failed "
                 .. tostring(result and result.message or message))
+            if on_failure then
+                on_failure(result and result.message or message)
+            end
             return
         end
         logger.info("Syncest " .. label .. ": success")
+        self:_syncConnectionRestored()
         if on_complete then on_complete(result) end
     end
     UIManager:scheduleIn(AUTO_SYNC_POLL_INTERVAL, poll)
@@ -220,6 +226,7 @@ function Syncest:_backgroundPushProgress(payload, notify)
         logger.warn("Syncest background progress push: launch failed "
             .. tostring(pid_or_err))
         os.remove(result_file)
+        if notify then self:_autoFailureNotify("progress") end
         return false
     end
 
@@ -240,6 +247,7 @@ function Syncest:_backgroundPushProgress(payload, notify)
             self._auto_push_progress_running = false
             self._auto_push_progress_pid = nil
             os.remove(result_file)
+            if notify then self:_autoFailureNotify("progress") end
             return
         end
 
@@ -248,6 +256,7 @@ function Syncest:_backgroundPushProgress(payload, notify)
         local success, message = read_background_result(result_file)
         if success then
             logger.info("Syncest background progress push: success")
+            self:_syncConnectionRestored()
             if self.ui and self.ui.doc_settings then
                 local doc_readest_sync =
                     self.ui.doc_settings:readSetting("webdav_sync") or {}
@@ -259,6 +268,7 @@ function Syncest:_backgroundPushProgress(payload, notify)
         else
             logger.warn("Syncest background progress push: failed "
                 .. tostring(message))
+            if notify then self:_autoFailureNotify("progress") end
         end
     end
     UIManager:scheduleIn(AUTO_SYNC_POLL_INTERVAL, poll)
@@ -312,6 +322,7 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
         logger.warn("Syncest background progress pull: launch failed "
             .. tostring(pid_or_err))
         os.remove(result_file)
+        if notify then self:_autoFailureNotify("progress") end
         return false
     end
 
@@ -332,6 +343,7 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
             self._auto_pull_progress_running = false
             self._auto_pull_progress_pid = nil
             os.remove(result_file)
+            if notify then self:_autoFailureNotify("progress") end
             return
         end
 
@@ -341,10 +353,12 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
         if not result or result.success ~= true then
             logger.warn("Syncest background progress pull: failed "
                 .. tostring(result and result.message or message))
+            if notify then self:_autoFailureNotify("progress") end
             return
         end
 
         logger.info("Syncest background progress pull: success")
+        self:_syncConnectionRestored()
         if self:getBookIdentifiers() ~= book_hash then
             logger.warn("Syncest background progress pull: current book changed, skipping apply")
             return
@@ -371,6 +385,7 @@ function Syncest:_backgroundPushStats(notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
     local settings = copy_settings(self.settings)
+    local failure_fn = notify and function() self:_autoFailureNotify("stats") end or nil
     return self:_runBackgroundJSON("background stats push", "syncest_stats_push", function()
         local Stats = require("syncest_syncstats")
         local Client = require("webdav_syncclient")
@@ -411,13 +426,14 @@ function Syncest:_backgroundPushStats(notify)
             G_reader_settings:saveSetting("webdav_sync", self.settings)
             if notify then self:_autoNotify("stats", "pushed") end
         end
-    end)
+    end, failure_fn)
 end
 
 function Syncest:_backgroundPullStats(notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
     local settings = copy_settings(self.settings)
+    local failure_fn = notify and function() self:_autoFailureNotify("stats") end or nil
     return self:_runBackgroundJSON("background stats pull", "syncest_stats_pull", function()
         local Stats = require("syncest_syncstats")
         local Client = require("webdav_syncclient")
@@ -461,12 +477,13 @@ function Syncest:_backgroundPullStats(notify)
         if notify and (tonumber(result.count) or 0) > 0 then
             self:_autoNotify("stats", "pulled")
         end
-    end)
+    end, failure_fn)
 end
 
 function Syncest:_backgroundPushVocab(notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
+    local failure_fn = notify and function() self:_autoFailureNotify("vocab") end or nil
     return self:_runBackgroundJSON("background vocab push", "syncest_vocab_push", function()
         local Vocab = require("syncest_syncvocab")
         local Client = require("webdav_syncclient")
@@ -491,12 +508,13 @@ function Syncest:_backgroundPushVocab(notify)
             G_reader_settings:saveSetting("webdav_sync", self.settings)
             if notify then self:_autoNotify("vocab", "pushed") end
         end
-    end)
+    end, failure_fn)
 end
 
 function Syncest:_backgroundPullVocab(notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
+    local failure_fn = notify and function() self:_autoFailureNotify("vocab") end or nil
     return self:_runBackgroundJSON("background vocab pull", "syncest_vocab_pull", function()
         local Vocab = require("syncest_syncvocab")
         local Client = require("webdav_syncclient")
@@ -525,12 +543,13 @@ function Syncest:_backgroundPullVocab(notify)
         if notify and (tonumber(result.added) or 0) > 0 then
             self:_autoNotify("vocab", "pulled")
         end
-    end)
+    end, failure_fn)
 end
 
 function Syncest:_backgroundPushAnnotations(payload, notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
+    local failure_fn = notify and function() self:_autoFailureNotify("annotations") end or nil
     return self:_runBackgroundJSON(
         "background annotations push",
         "syncest_annotations_push",
@@ -563,7 +582,56 @@ function Syncest:_backgroundPushAnnotations(payload, notify)
                 self.ui.doc_settings:flush()
             end
             if notify then self:_autoNotify("annotations", "pushed") end
-        end)
+        end,
+        failure_fn)
+end
+
+function Syncest:_backgroundPullAnnotations(book_hash, full_sync, notify)
+    local server = self.settings and self.settings.sync_server
+    if type(server) ~= "table" or not book_hash then return false end
+    local since = full_sync and 0 or (self.settings.last_notes_sync_at or 0)
+    local failure_fn = notify and function() self:_autoFailureNotify("annotations") end or nil
+    return self:_runBackgroundJSON(
+        "background annotations pull",
+        "syncest_annotations_pull",
+        function()
+            local Client = require("webdav_syncclient")
+            local client = Client:new{ server = server }
+            local pulled = false
+            local response_data = nil
+            local message = nil
+            client:pullChanges({
+                since = since,
+                type = "notes",
+                book = book_hash,
+            }, function(success, response, status)
+                pulled = success == true
+                response_data = response
+                message = tostring(status or "")
+            end)
+            if not pulled then
+                return { success = false, message = message }
+            end
+            return {
+                success = true,
+                notes = response_data and response_data.notes or {},
+            }
+        end,
+        function(result)
+            if self:getBookIdentifiers() ~= book_hash then
+                logger.warn("Syncest background annotations pull: current book changed, skipping apply")
+                return
+            end
+            if self.ui and self.ui.document and self.ui.document.info
+                    and self.ui.document.info.has_pages then
+                logger.warn("Syncest background annotations pull: paged document, skipping apply")
+                return
+            end
+            local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
+            SyncAnnotations:applyPulledNotes(
+                self.ui, self.settings, result.notes, book_hash, self.dialog, notify_fn)
+        end,
+        failure_fn)
 end
 
 function Syncest:pushBookConfigAsync(notify)
@@ -646,6 +714,38 @@ function Syncest:_autoNotify(label, action)
     UIManager:scheduleIn(0.5, self._notify_task)
 end
 
+function Syncest:_autoFailureNotify(_label)
+    if self._syncest_connection_state == false then return end
+    self._syncest_connection_state = false
+    if self._failure_notify_task then
+        UIManager:unschedule(self._failure_notify_task)
+    end
+    self._failure_notify_task = function()
+        UIManager:show(Notification:new{
+            text = _("Syncest disconnected"),
+            timeout = 3,
+        })
+        self._failure_notify_task = nil
+    end
+    UIManager:scheduleIn(0.2, self._failure_notify_task)
+end
+
+function Syncest:_syncConnectionRestored()
+    if self._failure_notify_task then
+        UIManager:unschedule(self._failure_notify_task)
+        self._failure_notify_task = nil
+    end
+    if self._syncest_connection_state ~= false then
+        self._syncest_connection_state = true
+        return
+    end
+    self._syncest_connection_state = true
+    UIManager:show(Notification:new{
+        text = _("Syncest connected"),
+        timeout = 2,
+    })
+end
+
 function Syncest:init()
     self.last_sync_timestamp = 0
     self._last_pushed_page = nil
@@ -724,7 +824,11 @@ function Syncest:onReaderReady()
             logger.warn("Syncest onReaderReady: startup auto progress pull disabled")
         end
         if self.settings.auto_pull_annotations ~= false then
-            logger.warn("Syncest onReaderReady: auto annotations pull disabled")
+            UIManager:scheduleIn(4, function()
+                self:_runSafely("auto pull annotations", function()
+                    self:pullBookNotes(false, false, true)
+                end)
+            end)
         end
         if self.settings.auto_pull_stats ~= false then
             UIManager:scheduleIn(8, function()
@@ -1488,6 +1592,15 @@ function Syncest:pullBookNotes(interactive, full_sync, notify)
             function() self:pullBookNotes(interactive, full_sync, notify) end) then
         return
     end
+    if not interactive then
+        if self.ui and self.ui.document and self.ui.document.info
+                and self.ui.document.info.has_pages then
+            logger.warn("Syncest pullBookNotes: auto pull skipped for paged document")
+            return
+        end
+        self:_backgroundPullAnnotations(book_hash, full_sync, notify)
+        return
+    end
     local client = self:ensureClient(interactive)
     if not client then return end
     local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
@@ -1741,6 +1854,10 @@ function Syncest:onCloseWidget()
     if self._annotations_push_task then
         UIManager:unschedule(self._annotations_push_task)
         self._annotations_push_task = nil
+    end
+    if self._failure_notify_task then
+        UIManager:unschedule(self._failure_notify_task)
+        self._failure_notify_task = nil
     end
 end
 

@@ -282,6 +282,137 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
     )
 end
 
+function SyncAnnotations:applyPulledNotes(ui, settings, notes, book_hash, dialog, notify_fn)
+    if not notes or #notes == 0 then return false end
+
+    logger.dbg("ReadestSync: Pulled annotations from sync:", #notes)
+    local annotation_mgr = ui.annotation
+    if not annotation_mgr then return false end
+
+    -- Honor remote deletions before adding: drop local annotations the server
+    -- has tombstoned so they don't reappear (issue #4119).
+    local removed = self:removeDeletedAnnotations(annotation_mgr, notes, book_hash)
+
+    -- Build dedup sets: by ID, by pos0|pos1 for annotations, by page xpointer for bookmarks.
+    local existing_ids = {}
+    local existing_annotations = {}
+    local existing_bookmarks = {}
+    for _, item in ipairs(annotation_mgr.annotations) do
+        if item.id then
+            existing_ids[item.id] = true
+        end
+        if item.drawer then
+            local pos0 = item.pos0
+            local pos1 = item.pos1
+            if type(pos0) == "table" then pos0 = nil end
+            if type(pos1) == "table" then pos1 = nil end
+            local key = tostring(pos0) .. "|" .. tostring(pos1 or "")
+            existing_annotations[key] = true
+            if not item.id and pos0 then
+                local id = self:generateNoteId(book_hash, "annotation", tostring(pos0), pos1 and tostring(pos1))
+                existing_ids[id] = true
+            end
+        elseif type(item.page) == "string" then
+            existing_bookmarks[item.page] = true
+            if not item.id then
+                local id = self:generateNoteId(book_hash, "bookmark", item.page)
+                existing_ids[id] = true
+            end
+        end
+    end
+
+    local added = 0
+    for _, note in ipairs(notes) do
+        if note.deletedAt or note.deleted_at then
+            goto continue
+        end
+
+        local xp0 = note.xpointer0
+        if not xp0 then goto continue end
+        if note.id and existing_ids[note.id] then goto continue end
+
+        local note_type = note.type
+        local item
+
+        local created = self:parseISODatetime(note.created_at)
+        local updated = self:parseISODatetime(note.updated_at) or created
+        local datetime_str = os.date("%Y-%m-%d %H:%M:%S", created)
+        local datetime_updated_str = os.date("%Y-%m-%d %H:%M:%S", updated)
+
+        local pageno = ui.document:getPageFromXPointer(xp0) or note.page
+        local chapter = ui.toc and ui.toc:getTocTitleByPage(xp0) or nil
+        if chapter == "" then chapter = nil end
+
+        local note_text = note.note
+        if note_text == "" then note_text = nil end
+
+        if note_type == "bookmark" then
+            if existing_bookmarks[xp0] then goto continue end
+
+            item = {
+                id = note.id,
+                page = xp0,
+                text = note.text or "",
+                note = note_text,
+                chapter = chapter,
+                pageno = pageno,
+                datetime = datetime_str,
+                datetime_updated = datetime_updated_str,
+            }
+            existing_bookmarks[xp0] = true
+        else
+            local xp1 = note.xpointer1
+            local key = xp0 .. "|" .. (xp1 or "")
+            if existing_annotations[key] then goto continue end
+
+            local drawer = "lighten"
+            if note.style == "underline" then
+                drawer = "underscore"
+            elseif note.style == "squiggly" then
+                drawer = "strikeout"
+            end
+
+            item = {
+                id = note.id,
+                pos0 = xp0,
+                pos1 = xp1 or xp0,
+                page = xp0,
+                text = note.text or "",
+                note = note_text,
+                drawer = drawer,
+                color = READEST_TO_KO_COLOR[note.color] or "yellow",
+                chapter = chapter,
+                pageno = pageno,
+                datetime = datetime_str,
+                datetime_updated = datetime_updated_str,
+            }
+            existing_annotations[key] = true
+        end
+
+        local index = annotation_mgr:addItem(item)
+        ui:handleEvent(Event:new("AnnotationsModified", { item, index_modified = index }))
+        logger.dbg("ReadestSync: Added annotation from sync:", item)
+        added = added + 1
+
+        ::continue::
+    end
+
+    settings.last_notes_sync_at = os.time() * 1000
+    G_reader_settings:saveSetting("webdav_sync", settings)
+    if ui.doc_settings then
+        local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
+        doc_readest_sync.last_synced_at_notes = os.time()
+        ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
+        ui.doc_settings:flush()
+    end
+
+    if added > 0 or removed > 0 then
+        UIManager:setDirty(dialog, "ui")
+    end
+    if notify_fn then notify_fn("annotations", "pulled") end
+    return true
+end
+
 function SyncAnnotations:pull(ui, settings, client, book_hash, dialog, interactive, full_sync, notify_fn)
     if ui.document.info.has_pages then
         if interactive then
@@ -302,140 +433,7 @@ function SyncAnnotations:pull(ui, settings, client, book_hash, dialog, interacti
             if not success then return end
 
             local data = response.notes
-            if not data or #data == 0 then return end
-
-            logger.dbg("ReadestSync: Pulled annotations from sync:", #data)
-            local annotation_mgr = ui.annotation
-            if not annotation_mgr then return end
-
-            -- Honor remote deletions before adding: drop local annotations
-            -- the server has tombstoned so they don't reappear (issue #4119).
-            local removed = self:removeDeletedAnnotations(annotation_mgr, data, book_hash)
-
-            -- Build dedup sets: by ID, by pos0|pos1 for annotations, by page xpointer for bookmarks
-            local existing_ids = {}
-            local existing_annotations = {}
-            local existing_bookmarks = {}
-            for _, item in ipairs(annotation_mgr.annotations) do
-                -- Use stored id if available
-                if item.id then
-                    existing_ids[item.id] = true
-                end
-                if item.drawer then
-                    local pos0 = item.pos0
-                    local pos1 = item.pos1
-                    if type(pos0) == "table" then pos0 = nil end
-                    if type(pos1) == "table" then pos1 = nil end
-                    local key = tostring(pos0) .. "|" .. tostring(pos1 or "")
-                    existing_annotations[key] = true
-                    -- Also generate ID for annotations without id
-                    if not item.id and pos0 then
-                        local id = self:generateNoteId(book_hash, "annotation", tostring(pos0), pos1 and tostring(pos1))
-                        existing_ids[id] = true
-                    end
-                elseif type(item.page) == "string" then
-                    existing_bookmarks[item.page] = true
-                    if not item.id then
-                        local id = self:generateNoteId(book_hash, "bookmark", item.page)
-                        existing_ids[id] = true
-                    end
-                end
-            end
-
-            local added = 0
-            for _, note in ipairs(data) do
-                if note.deletedAt or note.deleted_at then
-                    goto continue
-                end
-
-                local xp0 = note.xpointer0
-                if not xp0 then goto continue end
-
-                -- Deduplicate by server-provided ID
-                if note.id and existing_ids[note.id] then goto continue end
-
-                local note_type = note.type
-                local item
-
-                local created = self:parseISODatetime(note.created_at)
-                local updated = self:parseISODatetime(note.updated_at) or created
-                local datetime_str = os.date("%Y-%m-%d %H:%M:%S", created)
-                local datetime_updated_str = os.date("%Y-%m-%d %H:%M:%S", updated)
-
-                -- Resolve KOReader page number from xpointer
-                local pageno = ui.document:getPageFromXPointer(xp0) or note.page
-                -- Resolve chapter title so downstream tools can group by chapter,
-                -- matching native KOReader highlight creation behavior.
-                local chapter = ui.toc and ui.toc:getTocTitleByPage(xp0) or nil
-                if chapter == "" then chapter = nil end
-
-                local note_text = note.note
-                if note_text == "" then note_text = nil end
-
-                if note_type == "bookmark" then
-                    if existing_bookmarks[xp0] then goto continue end
-
-                    item = {
-                        id = note.id,
-                        page = xp0,
-                        text = note.text or "",
-                        note = note_text,
-                        chapter = chapter,
-                        pageno = pageno,
-                        datetime = datetime_str,
-                        datetime_updated = datetime_updated_str,
-                    }
-                    existing_bookmarks[xp0] = true
-                else
-                    local xp1 = note.xpointer1
-                    local key = xp0 .. "|" .. (xp1 or "")
-                    if existing_annotations[key] then goto continue end
-
-                    local drawer = "lighten"
-                    if note.style == "underline" then
-                        drawer = "underscore"
-                    elseif note.style == "squiggly" then
-                        drawer = "strikeout"
-                    end
-
-                    item = {
-                        id = note.id,
-                        pos0 = xp0,
-                        pos1 = xp1 or xp0,
-                        page = xp0,
-                        text = note.text or "",
-                        note = note_text,
-                        drawer = drawer,
-                        color = READEST_TO_KO_COLOR[note.color] or "yellow",
-                        chapter = chapter,
-                        pageno = pageno,
-                        datetime = datetime_str,
-                        datetime_updated = datetime_updated_str,
-                    }
-                    existing_annotations[key] = true
-                end
-
-                local index = annotation_mgr:addItem(item)
-                ui:handleEvent(Event:new("AnnotationsModified", { item, index_modified = index }))
-                logger.dbg("ReadestSync: Added annotation from sync:", item)
-                added = added + 1
-
-                ::continue::
-            end
-
-            settings.last_notes_sync_at = os.time() * 1000
-            G_reader_settings:saveSetting("webdav_sync", settings)
-            if ui.doc_settings then
-                local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
-                doc_readest_sync.last_synced_at_notes = os.time()
-                ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
-                ui.doc_settings:flush()
-            end
-
-            if added > 0 or removed > 0 then
-                UIManager:setDirty(dialog, "ui")
-            end
-            if notify_fn then notify_fn("annotations", "pulled") end
+            self:applyPulledNotes(ui, settings, data, book_hash, dialog, notify_fn)
         end
     )
 end
