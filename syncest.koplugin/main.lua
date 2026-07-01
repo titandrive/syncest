@@ -1318,6 +1318,12 @@ function Syncest:addToMainMenu(menu_items)
                         end,
                     },
                 },
+            },
+            {
+                text = _("Updates"),
+                sub_item_table_func = function()
+                    return self:updateMenuItems()
+                end,
                 separator = true,
             },
             -- ── Library & Books ─────────────────────────────────────
@@ -1369,13 +1375,6 @@ function Syncest:addToMainMenu(menu_items)
                 text = _("Pull all now"),
                 enabled_func = function() return configured end,
                 callback = function() self:pullAll(true) end,
-                separator = true,
-            },
-            {
-                text = _("Updates"),
-                sub_item_table_func = function()
-                    return self:updateMenuItems()
-                end,
             },
         }
 
