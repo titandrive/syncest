@@ -3,7 +3,6 @@ local WebDavApi = require("apps/cloudstorage/webdavapi")
 local json = require("json")
 local logger = require("logger")
 local http = require("socket.http")
-local ltn12 = require("ltn12")
 local ok_socket, socket = pcall(require, "socket")
 
 -- LuaSocket reads http.TIMEOUT on every new TCP connection, so this caps

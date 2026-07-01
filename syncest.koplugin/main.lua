@@ -1314,22 +1314,22 @@ function Syncest:addToMainMenu(menu_items)
             {
                 text = _("Push stats now"),
                 enabled_func = function() return configured end,
-                callback = function() self:pushBookStats(true, true) end,
+                callback = function() self:pushBookStats(false, true) end,
             },
             {
                 text = _("Pull stats now"),
                 enabled_func = function() return configured end,
-                callback = function() self:pullBookStats(true, true) end,
+                callback = function() self:pullBookStats(false, true) end,
             },
             {
                 text = _("Push vocab now"),
                 enabled_func = function() return configured end,
-                callback = function() self:pushVocab(true, true) end,
+                callback = function() self:pushVocab(false, true) end,
             },
             {
                 text = _("Pull vocab now"),
                 enabled_func = function() return configured end,
-                callback = function() self:pullVocab(true, true) end,
+                callback = function() self:pullVocab(false, true) end,
             },
         }
 
@@ -1338,12 +1338,12 @@ function Syncest:addToMainMenu(menu_items)
                 {
                     text = _("Push reading progress now"),
                     enabled_func = function() return configured end,
-                    callback = function() self:pushBookConfig(true, true) end,
+                    callback = function() self:pushBookConfigAsync(true) end,
                 },
                 {
                     text = _("Pull reading progress now"),
                     enabled_func = function() return configured end,
-                    callback = function() self:pullBookConfig(true, true) end,
+                    callback = function() self:pullBookConfigAsync(true, true) end,
                 },
                 {
                     text = _("Push annotations now"),
