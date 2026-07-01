@@ -676,8 +676,8 @@ Syncest.default_settings = {
     auto_sync                = false,
     -- Granular auto sync flags (all default on; only meaningful when auto_sync=true)
     auto_push_progress       = true,
-    push_every_x_pages       = false,
-    push_page_interval       = 10,
+    push_every_x_pages       = true,
+    push_page_interval       = 1,
     auto_pull_progress       = true,
     auto_push_annotations    = true,
     auto_pull_annotations    = true,
@@ -750,6 +750,17 @@ function Syncest:init()
     self.last_sync_timestamp = 0
     self._last_pushed_page = nil
     self.settings = G_reader_settings:readSetting("webdav_sync", self.default_settings)
+    if not self.settings.progress_push_mode_migrated then
+        if self.settings.auto_push_progress ~= false then
+            self.settings.push_every_x_pages = true
+            self.settings.push_page_interval = 1
+        end
+        self.settings.progress_push_mode_migrated = true
+        G_reader_settings:saveSetting("webdav_sync", self.settings)
+    elseif self.settings.push_page_interval == nil then
+        self.settings.push_page_interval = 1
+        G_reader_settings:saveSetting("webdav_sync", self.settings)
+    end
     if SYNC_PLUGIN_INERT_DIAGNOSTIC then
         logger.warn("Syncest init: inert diagnostic mode enabled; no menus, hooks, or WebDAV")
         return
@@ -787,6 +798,12 @@ function Syncest:onDispatcherRegisterActions()
     Dispatcher:registerAction("syncest_pull_books",
         { category="none", event="SyncestPullBooks",
           title=_("Pull Syncest book library"), general=true })
+    Dispatcher:registerAction("syncest_push_all",
+        { category="none", event="SyncestPushAll",
+          title=_("Push Syncest progress, annotations, stats, and vocab"), general=true })
+    Dispatcher:registerAction("syncest_pull_all",
+        { category="none", event="SyncestPullAll",
+          title=_("Pull Syncest progress, annotations, stats, and vocab"), general=true })
 end
 
 function Syncest:onDispatcherRegisterReaderActions()
@@ -1129,21 +1146,12 @@ function Syncest:addToMainMenu(menu_items)
                         enabled_func = function() return false end,
                     },
                     {
-                        text = _("Push reading progress on page turn"),
-                        enabled_func = function() return self.settings.auto_sync end,
-                        checked_func = function()
-                            return self.settings.auto_push_progress ~= false
-                        end,
-                        callback = function()
-                            self.settings.auto_push_progress =
-                                self.settings.auto_push_progress == false
-                            G_reader_settings:saveSetting("webdav_sync", self.settings)
-                        end,
-                    },
-                    {
                         text_func = function()
-                            local n = self.settings.push_page_interval or 10
-                            return T(_("Push every %1 pages (hold to change)"), n)
+                            local n = self.settings.push_page_interval or 1
+                            if n == 1 then
+                                return T(_("Push every %1 page turn (hold to change)"), n)
+                            end
+                            return T(_("Push every %1 page turns (hold to change)"), n)
                         end,
                         enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
@@ -1154,23 +1162,11 @@ function Syncest:addToMainMenu(menu_items)
                                 not self.settings.push_every_x_pages
                             G_reader_settings:saveSetting("webdav_sync", self.settings)
                         end,
-                        hold_callback = function()
-                            local menu_widget
-                            local stack = UIManager._window_stack
-                            if stack then
-                                for i = #stack, 1, -1 do
-                                    local entry = stack[i]
-                                    local w = entry and (entry.widget or entry)
-                                    if w and type(w.updateItems) == "function" then
-                                        menu_widget = w
-                                        break
-                                    end
-                                end
-                            end
+                        hold_callback = function(menu_widget)
                             local SpinWidget = require("ui/widget/spinwidget")
                             UIManager:show(SpinWidget:new{
-                                title_text = _("Push every X pages"),
-                                value = self.settings.push_page_interval or 10,
+                                title_text = _("Push every X page turns"),
+                                value = self.settings.push_page_interval or 1,
                                 value_min = 1,
                                 value_max = 500,
                                 value_step = 1,
@@ -1179,7 +1175,10 @@ function Syncest:addToMainMenu(menu_items)
                                     self.settings.push_page_interval = spin.value
                                     G_reader_settings:saveSetting("webdav_sync", self.settings)
                                     if menu_widget then
-                                        UIManager:close(menu_widget)
+                                        UIManager:scheduleIn(0.1, function()
+                                            menu_widget:updateItems()
+                                            UIManager:forceRePaint()
+                                        end)
                                     end
                                 end,
                             })
@@ -1295,10 +1294,6 @@ function Syncest:addToMainMenu(menu_items)
                 separator = true,
             },
             -- ── Push/Pull All ───────────────────────────────────────
-            {
-                text = _("Sync all"),
-                enabled_func = function() return false end,
-            },
             {
                 text = _("Push all now"),
                 enabled_func = function() return configured end,
@@ -1786,6 +1781,12 @@ end
 function Syncest:onSyncestPullBooks()
     self:_runSafely("manual pull books", function() self:syncBooksLibrary("pull", true) end, true)
 end
+function Syncest:onSyncestPushAll()
+    self:pushAll(true)
+end
+function Syncest:onSyncestPullAll()
+    self:pullAll(true)
+end
 
 function Syncest:onCloseDocument()
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
@@ -1834,17 +1835,8 @@ function Syncest:onPageUpdate(page)
         logger.warn("Syncest onPageUpdate: auto progress push skipped")
         return
     end
-    if self.settings.auto_push_progress ~= false then
-        if self.delayed_push_task then
-            UIManager:unschedule(self.delayed_push_task)
-        end
-        self.delayed_push_task = function()
-            self:pushBookConfig(false)
-        end
-        UIManager:scheduleIn(5, self.delayed_push_task)
-    end
     if self.settings.push_every_x_pages == true then
-        local interval = self.settings.push_page_interval or 10
+        local interval = self.settings.push_page_interval or 1
         if self._last_pushed_page == nil
                 or math.abs(page - self._last_pushed_page) >= interval then
             self._last_pushed_page = page
