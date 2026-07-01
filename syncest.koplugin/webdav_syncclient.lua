@@ -3,14 +3,12 @@ local WebDavApi = require("apps/cloudstorage/webdavapi")
 local json = require("json")
 local logger = require("logger")
 local http = require("socket.http")
-local socket = require("socket")
 local ltn12 = require("ltn12")
 
 -- LuaSocket reads http.TIMEOUT on every new TCP connection, so this caps
 -- the OS-level TCP connect + transfer time and prevents ANR crashes when
 -- the WebDAV server is unreachable (e.g. VPN is off).
 local SYNC_TIMEOUT = 4
-local REACHABILITY_CACHE_SECONDS = 15
 
 local WebDavSyncClient = {}
 
@@ -41,41 +39,6 @@ function WebDavSyncClient:new(o)
     t.password = o.server.password or ""
     t._ensured_folders = {}
     return t
-end
-
-function WebDavSyncClient:_serverReachable()
-    local now = os.time()
-    if self._reachable_checked_at
-            and now - self._reachable_checked_at < REACHABILITY_CACHE_SECONDS then
-        logger.info("WebDavSyncClient reachable: cached connected="
-            .. tostring(self._reachable_cached))
-        return self._reachable_cached == true
-    end
-    local addr = self.server and self.server.address or ""
-    local host = addr:match("https?://([^/:]+)")
-    if not host then
-        logger.warn("WebDavSyncClient reachable: invalid server address")
-        self._reachable_checked_at = now
-        self._reachable_cached = false
-        return false
-    end
-    local port = tonumber(addr:match("//[^/]*:(%d+)"))
-        or (addr:match("^https://") and 443 or 80)
-    logger.info("WebDavSyncClient reachable: checking host=" .. tostring(host)
-        .. " port=" .. tostring(port))
-    local ok, connected = pcall(function()
-        local s = socket.tcp()
-        if not s then return false end
-        s:settimeout(1)
-        local result = s:connect(host, port)
-        s:close()
-        return result == 1
-    end)
-    logger.info("WebDavSyncClient reachable: ok=" .. tostring(ok)
-        .. " connected=" .. tostring(connected))
-    self._reachable_checked_at = now
-    self._reachable_cached = ok and connected == true
-    return self._reachable_cached
 end
 
 -- ── URL helpers ────────────────────────────────────────────────────
@@ -303,25 +266,28 @@ function WebDavSyncClient:pullChanges(params, callback)
     logger.info("WebDavSyncClient pullChanges: type=" .. tostring(params and params.type)
         .. " book=" .. tostring(params and params.book)
         .. " since=" .. tostring(params and params.since))
-    if not self:_serverReachable() then
-        logger.warn("WebDavSyncClient pullChanges: server unreachable")
-        callback(false, {}, "unreachable")
-        return
-    end
     local t     = params.type
     local book  = params.book
     local since = tonumber(params.since) or 0
 
     if t == "configs" then
-        local data = self:_readJSON("sync/" .. book .. "/progress.json")
+        local data, read_status = self:_readJSON("sync/" .. book .. "/progress.json")
+        if read_status == READ_FAILED then
+            callback(false, {}, "read_failed")
+            return
+        end
         callback(true, data or {configs = {}}, 200)
 
     elseif t == "notes" then
-        local data = self:_readJSON("sync/" .. book .. "/annotations.json")
+        local data, read_status = self:_readJSON("sync/" .. book .. "/annotations.json")
+        if read_status == READ_FAILED then
+            callback(false, {}, "read_failed")
+            return
+        end
         callback(true, data or {notes = {}}, 200)
 
     elseif t == "stats" then
-        local data = self:_readJSON("stats.json")
+        local data, read_status = self:_readJSON("stats.json")
         if data then
             -- Filter pages newer than the cursor; stamp updated_at_ms so the
             -- stats module can advance its pull cursor.
@@ -339,11 +305,19 @@ function WebDavSyncClient:pullChanges(params, callback)
             end
             callback(true, data, 200)
         else
+            if read_status == READ_FAILED then
+                callback(false, {}, "read_failed")
+                return
+            end
             callback(true, {statBooks = {}, statPages = {}}, 200)
         end
 
     elseif t == "vocab" then
-        local data = self:_readJSON("vocab.json")
+        local data, read_status = self:_readJSON("vocab.json")
+        if read_status == READ_FAILED then
+            callback(false, {}, "read_failed")
+            return
+        end
         callback(true, data or {words = {}}, 200)
 
     else
@@ -359,11 +333,6 @@ function WebDavSyncClient:pushChanges(changes, callback)
         .. " statPages=" .. tostring(changes.statPages and #changes.statPages or 0)
         .. " vocab=" .. tostring(changes.vocab and #changes.vocab or 0)
         .. " books=" .. tostring(changes.books and #changes.books or 0))
-    if not self:_serverReachable() then
-        logger.warn("WebDavSyncClient pushChanges: server unreachable")
-        callback(false, {}, "unreachable")
-        return
-    end
     local ok = true
 
     -- Reading progress — last write wins per book
@@ -388,18 +357,24 @@ function WebDavSyncClient:pushChanges(changes, callback)
     if changes.notes and #changes.notes > 0 then
         local book_hash = changes.notes[1].bookHash
         if book_hash then
-            self:_ensureFolder("sync")
-            self:_ensureFolder("sync/" .. book_hash)
             local ann_path = "sync/" .. book_hash .. "/annotations.json"
-            local remote = self:_readJSON(ann_path)
-            if remote == nil then
+            local remote, read_status = self:_readJSON(ann_path)
+            if remote == nil and read_status ~= READ_MISSING then
                 -- Can't read remote — abort rather than overwrite with local-only subset
                 logger.warn("WebDavSyncClient pushChanges: could not read remote annotations, skipping write")
                 ok = false
             else
+                remote = remote or {notes = {}}
                 local merged = self:_mergeNotes(remote.notes or {}, changes.notes)
                 if not self:_writeJSON(ann_path, {notes = merged}) then
-                    ok = false
+                    logger.warn("WebDavSyncClient pushChanges: annotations write failed, repairing folders")
+                    if self:_ensureFolder("sync") and self:_ensureFolder("sync/" .. book_hash) then
+                        if not self:_writeJSON(ann_path, {notes = merged}) then
+                            ok = false
+                        end
+                    else
+                        ok = false
+                    end
                 end
             end
         end
@@ -408,31 +383,46 @@ function WebDavSyncClient:pushChanges(changes, callback)
     -- Stats — union merge with remote
     if (changes.statBooks and #changes.statBooks > 0)
             or (changes.statPages and #changes.statPages > 0) then
-        local remote = self:_readJSON("stats.json") or {}
-        local mb, mp = self:_mergeStats(
-            remote, changes.statBooks, changes.statPages)
-        if not self:_writeJSON("stats.json",
-                {statBooks = mb, statPages = mp}) then
+        local remote, read_status = self:_readJSON("stats.json")
+        if remote == nil and read_status ~= READ_MISSING then
             ok = false
+        else
+            remote = remote or {}
+            local mb, mp = self:_mergeStats(
+                remote, changes.statBooks, changes.statPages)
+            if not self:_writeJSON("stats.json",
+                    {statBooks = mb, statPages = mp}) then
+                ok = false
+            end
         end
     end
 
     -- Vocab builder words — union merge with remote
     if changes.vocab then
-        local remote = self:_readJSON("vocab.json") or {words = {}}
-        local merged = self:_mergeVocab(remote.words or {}, changes.vocab)
-        if not self:_writeJSON("vocab.json", {words = merged}) then
+        local remote, read_status = self:_readJSON("vocab.json")
+        if remote == nil and read_status ~= READ_MISSING then
             ok = false
+        else
+            remote = remote or {words = {}}
+            local merged = self:_mergeVocab(remote.words or {}, changes.vocab)
+            if not self:_writeJSON("vocab.json", {words = merged}) then
+                ok = false
+            end
         end
     end
 
     -- Library book rows — union merge with remote
     if changes.books and #changes.books > 0 then
-        local remote = self:_readJSON("library.json") or {books = {}}
-        local merged = self:_mergeBooks(remote.books or {}, changes.books)
-        if not self:_writeJSON("library.json",
-                {books = merged, updatedAt = os.time() * 1000}) then
+        local remote, read_status = self:_readJSON("library.json")
+        if remote == nil and read_status ~= READ_MISSING then
             ok = false
+        else
+            remote = remote or {books = {}}
+            local merged = self:_mergeBooks(remote.books or {}, changes.books)
+            if not self:_writeJSON("library.json",
+                    {books = merged, updatedAt = os.time() * 1000}) then
+                ok = false
+            end
         end
     end
 
