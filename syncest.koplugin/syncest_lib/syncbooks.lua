@@ -16,6 +16,32 @@ local function now_ms()
     return math.floor(os.time() * 1000)
 end
 
+local function safe_title_filename(title)
+    local name = tostring(title or ""):gsub("^%s*(.-)%s*$", "%1")
+    if name == "" then name = "Untitled" end
+    name = name:gsub('[<>:|"?*\\/%c]', "_")
+    name = name:gsub("%s+", " ")
+    name = name:gsub("^%s*(.-)%s*$", "%1")
+    if #name > 120 then name = name:sub(1, 120) end
+    if name == "" or name:match("^_+$") then name = "Untitled" end
+    return "_" .. name .. ".json"
+end
+
+local function write_temp_json(data)
+    local json = require("json")
+    local DataStorage = require("datastorage")
+    local path = DataStorage:getSettingsDir()
+        .. "/syncest_book_marker_" .. tostring(os.time())
+        .. "_" .. tostring(math.random(1000000)) .. ".json"
+    local ok, encoded = pcall(json.encode, data)
+    if not ok then return nil end
+    local f = io.open(path, "w")
+    if not f then return nil end
+    f:write(encoded)
+    f:close()
+    return path
+end
+
 function M.build_local_filename(book)
     if not book then return nil end
     local ext = EXTS[book.format]
@@ -153,7 +179,7 @@ local function ensure_folder(api, url, user, pass)
     local code = safe_webdav_call("MKCOL", function()
         return api:createFolder(url, user, pass, "")
     end)
-    return code == 201 or code == 405
+    return code == 201 or code == 405, code == 201
 end
 
 -- DELETE a WebDAV URL (file or collection). Returns HTTP status.
@@ -426,8 +452,9 @@ function M.uploadBook(book, opts, cb)
 
     -- Ensure books/{hash}/ folder exists
     local book_dir = string.format("books/%s", book.hash)
-    if not ensure_folder(api, url("books"), user, pass)
-            or not ensure_folder(api, url(book_dir), user, pass) then
+    local books_ok = ensure_folder(api, url("books"), user, pass)
+    local book_ok, book_created = ensure_folder(api, url(book_dir), user, pass)
+    if not books_ok or not book_ok then
         if cb then cb(false, "could not create cloud folder") end
         return false, "could not create cloud folder"
     end
@@ -441,6 +468,23 @@ function M.uploadBook(book, opts, cb)
     if type(code) ~= "number" or code < 200 or code > 299 then
         if cb then cb(false, err or "book upload failed", code) end
         return false, err or "book upload failed", code
+    end
+
+    if book_created then
+        local marker = write_temp_json({
+            bookHash = book.hash,
+            title = book.title or book.source_title or "",
+            authors = book.author and { book.author } or {},
+            updatedAt = os.time() * 1000,
+        })
+        if marker then
+            local marker_rel = string.format("books/%s/%s", book.hash,
+                safe_title_filename(book.title or book.source_title))
+            safe_webdav_call("uploadBookMarker " .. marker_rel, function()
+                return api:uploadFile(url(marker_rel), user, pass, marker)
+            end)
+            os.remove(marker)
+        end
     end
 
     -- Upload cover (best-effort)

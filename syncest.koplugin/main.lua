@@ -1664,6 +1664,7 @@ function Syncest:pushBookNotes(interactive, full_sync, notify)
     if not interactive then
         local book_hash = self:getBookIdentifiers()
         if not book_hash then return end
+        local meta = SyncConfig:getMetadataHashInfo(self.ui)
         local annotations =
             SyncAnnotations:getAnnotations(self.ui, self.settings, book_hash, full_sync)
         local doc_readest_sync = self.ui.doc_settings:readSetting("webdav_sync") or {}
@@ -1672,6 +1673,9 @@ function Syncest:pushBookNotes(interactive, full_sync, notify)
             annotations[#annotations + 1] = t
         end
         if #annotations == 0 then return end
+        for _, t in ipairs(annotations) do
+            t.bookMetadata = meta
+        end
         self:_backgroundPushAnnotations({
             books = {},
             notes = annotations,

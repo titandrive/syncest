@@ -19,6 +19,31 @@ local function now_ms()
     return math.floor(os.time() * 1000)
 end
 
+local function normalize_authors(authors)
+    if type(authors) == "table" then
+        return authors
+    end
+    if type(authors) == "string" and authors ~= "" then
+        local out = {}
+        for author in authors:gmatch("[^\n]+") do
+            out[#out + 1] = author:gsub("^%s*(.-)%s*$", "%1")
+        end
+        return out
+    end
+    return {}
+end
+
+local function safe_title_filename(title)
+    local name = tostring(title or ""):gsub("^%s*(.-)%s*$", "%1")
+    if name == "" then name = "Untitled" end
+    name = name:gsub('[<>:|"?*\\/%c]', "_")
+    name = name:gsub("%s+", " ")
+    name = name:gsub("^%s*(.-)%s*$", "%1")
+    if #name > 120 then name = name:sub(1, 120) end
+    if name == "" or name:match("^_+$") then name = "Untitled" end
+    return "_" .. name .. ".json"
+end
+
 local function withTimeout(label, fn)
     local prev_timeout = http.TIMEOUT
     http.TIMEOUT = SYNC_TIMEOUT
@@ -133,6 +158,52 @@ function WebDavSyncClient:_writeJSON(rel_path, data)
         self:_markPathExists(rel_path)
     end
     return success
+end
+
+function WebDavSyncClient:_writeBookMarker(folder, book)
+    if not folder or type(book) ~= "table" then return true end
+    local hash = book.bookHash or book.hash or book.book_hash
+    if not hash then return true end
+    local meta = book.bookMetadata or book.metadata or {}
+    local title = meta.title or book.title or book.sourceTitle or book.source_title
+    local marker = {
+        bookHash = hash,
+        title = title or "",
+        author = meta.author or book.author,
+        authors = normalize_authors(meta.authors or book.authors or book.author),
+        identifiers = meta.identifiers,
+        format = meta.format,
+        fileName = meta.fileName,
+        sourceTitle = meta.sourceTitle,
+        metaHashSource = meta.hash_source or book.metaHashSource,
+        metadata = meta.metadata,
+        updatedAt = os.time() * 1000,
+    }
+    return self:_writeJSON(folder .. "/" .. safe_title_filename(title), marker)
+end
+
+local function strip_marker_metadata(configs)
+    local out = {}
+    for i, config in ipairs(configs or {}) do
+        local copy = {}
+        for k, v in pairs(config) do
+            if k ~= "bookMetadata" then copy[k] = v end
+        end
+        out[i] = copy
+    end
+    return out
+end
+
+local function strip_note_marker_metadata(notes)
+    local out = {}
+    for i, note in ipairs(notes or {}) do
+        local copy = {}
+        for k, v in pairs(note) do
+            if k ~= "bookMetadata" then copy[k] = v end
+        end
+        out[i] = copy
+    end
+    return out
 end
 
 -- MKCOL, tolerating 405 (already exists) and 301/302 redirects.
@@ -342,11 +413,13 @@ function WebDavSyncClient:pushChanges(changes, callback)
     if changes.configs and #changes.configs > 0 then
         local book_hash = changes.configs[1].bookHash
         if book_hash then
+            local progress_configs = strip_marker_metadata(changes.configs)
             local progress_path = "sync/" .. book_hash .. "/progress.json"
-            if not self:_writeJSON(progress_path, {configs = changes.configs}) then
+            if not self:_writeJSON(progress_path, {configs = progress_configs}) then
                 logger.warn("WebDavSyncClient pushChanges: progress write failed, repairing folders")
                 if self:_ensureFolder("sync") and self:_ensureFolder("sync/" .. book_hash) then
-                    if not self:_writeJSON(progress_path, {configs = changes.configs}) then
+                    self:_writeBookMarker("sync/" .. book_hash, changes.configs[1])
+                    if not self:_writeJSON(progress_path, {configs = progress_configs}) then
                         ok = false
                     end
                 else
@@ -368,10 +441,12 @@ function WebDavSyncClient:pushChanges(changes, callback)
                 ok = false
             else
                 remote = remote or {notes = {}}
-                local merged = self:_mergeNotes(remote.notes or {}, changes.notes)
+                local notes = strip_note_marker_metadata(changes.notes)
+                local merged = self:_mergeNotes(remote.notes or {}, notes)
                 if not self:_writeJSON(ann_path, {notes = merged}) then
                     logger.warn("WebDavSyncClient pushChanges: annotations write failed, repairing folders")
                     if self:_ensureFolder("sync") and self:_ensureFolder("sync/" .. book_hash) then
+                        self:_writeBookMarker("sync/" .. book_hash, changes.notes[1])
                         if not self:_writeJSON(ann_path, {notes = merged}) then
                             ok = false
                         end

@@ -20,12 +20,32 @@ local function normalizeAuthor(author)
     return author
 end
 
+local function jsonSafeCopy(value, depth)
+    if depth and depth > 4 then return nil end
+    local value_type = type(value)
+    if value_type == "string" or value_type == "number" or value_type == "boolean" then
+        return value
+    end
+    if value_type ~= "table" then return nil end
+
+    local out = {}
+    for k, v in pairs(value) do
+        local key_type = type(k)
+        if key_type == "string" or key_type == "number" then
+            local copied = jsonSafeCopy(v, (depth or 0) + 1)
+            if copied ~= nil then out[k] = copied end
+        end
+    end
+    return out
+end
+
 function SyncConfig:getMetadataHashInfo(ui)
     local doc_props = ui.doc_settings:readSetting("doc_props") or {}
     local title = doc_props.title or ''
+    local doc_path = ui.doc_settings:readSetting("doc_path") or ''
+    local _doc_dir, filename = util.splitFilePathName(doc_path)
+    local basename, suffix = util.splitFileNameSuffix(filename or '')
     if title == '' then
-        local _doc_path, filename = util.splitFilePathName(ui.doc_settings:readSetting("doc_path") or '')
-        local basename, _suffix = util.splitFileNameSuffix(filename)
         title = basename or ''
     end
 
@@ -69,9 +89,14 @@ function SyncConfig:getMetadataHashInfo(ui)
     local hash_source = title .. "|" .. table.concat(authors_list, ",") .. "|" .. table.concat(identifiers_list, ",")
     return {
         title = title,
+        author = table.concat(authors_list, "\n"),
         authors = authors_list,
         identifiers = identifiers_list,
+        format = suffix and suffix:upper() or nil,
+        fileName = filename,
+        sourceTitle = basename,
         hash_source = hash_source,
+        metadata = jsonSafeCopy(doc_props),
     }
 end
 
@@ -91,9 +116,16 @@ function SyncConfig:getCurrentBookConfig(ui)
     }
 
     if not ui.document then return nil end
+    local meta = self:getMetadataHashInfo(ui)
+    config.bookMetadata = meta
     local current_page = ui:getCurrentPage()
     local page_count = ui.document:getPageCount()
     config.progress = {current_page, page_count}
+    config.currentPage = current_page
+    config.pageCount = page_count
+    if page_count and page_count > 0 then
+        config.progressPercent = current_page / page_count
+    end
 
     if not ui.document.info.has_pages then
         config.xpointer = ui.rolling and ui.rolling:getLastProgress() or ""
