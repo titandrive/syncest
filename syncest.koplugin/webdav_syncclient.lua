@@ -10,23 +10,59 @@ local ltn12 = require("ltn12")
 -- the OS-level TCP connect + transfer time and prevents ANR crashes when
 -- the WebDAV server is unreachable (e.g. VPN is off).
 local SYNC_TIMEOUT = 4
+local REACHABILITY_CACHE_SECONDS = 15
 
 local WebDavSyncClient = {}
+
+local READ_MISSING = {}
+local READ_FAILED = {}
+
+local function now_ms()
+    return math.floor(os.time() * 1000)
+end
+
+local function withTimeout(label, fn)
+    local prev_timeout = http.TIMEOUT
+    http.TIMEOUT = SYNC_TIMEOUT
+    local started = now_ms()
+    logger.info("WebDavSyncClient " .. label .. ": start timeout=" .. tostring(SYNC_TIMEOUT))
+    local ok, a, b, c = pcall(fn)
+    http.TIMEOUT = prev_timeout
+    logger.info("WebDavSyncClient " .. label .. ": done ok="
+        .. tostring(ok) .. " result=" .. tostring(a)
+        .. " duration_ms=" .. tostring(now_ms() - started))
+    return ok, a, b, c
+end
 
 function WebDavSyncClient:new(o)
     local t = setmetatable({}, { __index = self })
     t.server   = o.server
     t.username = o.server.username or ""
     t.password = o.server.password or ""
+    t._ensured_folders = {}
     return t
 end
 
 function WebDavSyncClient:_serverReachable()
+    local now = os.time()
+    if self._reachable_checked_at
+            and now - self._reachable_checked_at < REACHABILITY_CACHE_SECONDS then
+        logger.info("WebDavSyncClient reachable: cached connected="
+            .. tostring(self._reachable_cached))
+        return self._reachable_cached == true
+    end
     local addr = self.server and self.server.address or ""
     local host = addr:match("https?://([^/:]+)")
-    if not host then return false end
+    if not host then
+        logger.warn("WebDavSyncClient reachable: invalid server address")
+        self._reachable_checked_at = now
+        self._reachable_cached = false
+        return false
+    end
     local port = tonumber(addr:match("//[^/]*:(%d+)"))
         or (addr:match("^https://") and 443 or 80)
+    logger.info("WebDavSyncClient reachable: checking host=" .. tostring(host)
+        .. " port=" .. tostring(port))
     local ok, connected = pcall(function()
         local s = socket.tcp()
         if not s then return false end
@@ -35,7 +71,11 @@ function WebDavSyncClient:_serverReachable()
         s:close()
         return result == 1
     end)
-    return ok and connected == true
+    logger.info("WebDavSyncClient reachable: ok=" .. tostring(ok)
+        .. " connected=" .. tostring(connected))
+    self._reachable_checked_at = now
+    self._reachable_cached = ok and connected == true
+    return self._reachable_cached
 end
 
 -- ── URL helpers ────────────────────────────────────────────────────
@@ -53,38 +93,54 @@ local function tmp_path()
     return DataStorage:getSettingsDir() .. "/syncest_tmp.json"
 end
 
+function WebDavSyncClient:_markPathExists(rel_path)
+    self._base_folder_ensured = true
+    if not self._ensured_folders then self._ensured_folders = {} end
+    local parent = rel_path and rel_path:match("^(.*)/[^/]+$")
+    while parent and parent ~= "" do
+        self._ensured_folders[parent] = true
+        parent = parent:match("^(.*)/[^/]+$")
+    end
+end
+
 -- ── JSON read/write ────────────────────────────────────────────────
 
 function WebDavSyncClient:_readJSON(rel_path)
     local tmp = tmp_path()
-    local prev_timeout = http.TIMEOUT
-    http.TIMEOUT = SYNC_TIMEOUT
-    local ok, code = pcall(WebDavApi.downloadFile, WebDavApi,
-        self:_url(rel_path), self.username, self.password, tmp)
-    http.TIMEOUT = prev_timeout
+    local ok, code = withTimeout("readJSON " .. tostring(rel_path), function()
+        return WebDavApi:downloadFile(
+            self:_url(rel_path), self.username, self.password, tmp)
+    end)
     if not ok then
         logger.warn("WebDavSyncClient _readJSON: network error for " .. rel_path .. ": " .. tostring(code))
-        return nil
+        return nil, READ_FAILED
+    end
+    if code == 404 then
+        os.remove(tmp)
+        return nil, READ_MISSING
     end
     if code ~= 200 then
         logger.dbg("WebDavSyncClient _readJSON: " .. rel_path .. " → " .. tostring(code))
-        return nil
+        os.remove(tmp)
+        return nil, READ_FAILED
     end
+    self:_markPathExists(rel_path)
     local f = io.open(tmp, "r")
-    if not f then return nil end
+    if not f then return nil, READ_FAILED end
     local data = f:read("*a")
     f:close()
     os.remove(tmp)
-    if not data or data == "" then return nil end
+    if not data or data == "" then return nil, READ_MISSING end
     local ok, parsed = pcall(json.decode, data)
     if not ok then
         logger.warn("WebDavSyncClient _readJSON: parse error for " .. rel_path)
-        return nil
+        return nil, READ_FAILED
     end
     return parsed
 end
 
 function WebDavSyncClient:_writeJSON(rel_path, data)
+    logger.info("WebDavSyncClient writeJSON " .. tostring(rel_path) .. ": encoding")
     local ok, encoded = pcall(json.encode, data)
     if not ok then
         logger.warn("WebDavSyncClient _writeJSON: encode error: " .. tostring(encoded))
@@ -96,10 +152,9 @@ function WebDavSyncClient:_writeJSON(rel_path, data)
     f:write(encoded)
     f:close()
     local full_url = self:_url(rel_path)
-    local prev_timeout = http.TIMEOUT
-    http.TIMEOUT = SYNC_TIMEOUT
-    local ok2, code = pcall(WebDavApi.uploadFile, WebDavApi, full_url, self.username, self.password, tmp)
-    http.TIMEOUT = prev_timeout
+    local ok2, code = withTimeout("writeJSON " .. tostring(rel_path), function()
+        return WebDavApi:uploadFile(full_url, self.username, self.password, tmp)
+    end)
     os.remove(tmp)
     if not ok2 then
         logger.warn("WebDavSyncClient _writeJSON: network error for " .. rel_path .. ": " .. tostring(code))
@@ -108,19 +163,30 @@ function WebDavSyncClient:_writeJSON(rel_path, data)
     local success = type(code) == "number" and code >= 200 and code < 300
     if not success then
         logger.warn("WebDavSyncClient _writeJSON: upload failed code=" .. tostring(code) .. " url=" .. full_url)
+    else
+        self:_markPathExists(rel_path)
     end
     return success
 end
 
 -- MKCOL, tolerating 405 (already exists) and 301/302 redirects.
 function WebDavSyncClient:_ensureFolder(rel_path)
-    local prev_timeout = http.TIMEOUT
-    http.TIMEOUT = SYNC_TIMEOUT
-    local ok, code = pcall(WebDavApi.createFolder, WebDavApi,
-        self:_url(rel_path), self.username, self.password, "")
-    http.TIMEOUT = prev_timeout
+    if self._ensured_folders and self._ensured_folders[rel_path] then
+        logger.info("WebDavSyncClient ensureFolder " .. tostring(rel_path)
+            .. ": cached")
+        return true
+    end
+    local ok, code = withTimeout("ensureFolder " .. tostring(rel_path), function()
+        return WebDavApi:createFolder(
+            self:_url(rel_path), self.username, self.password, "")
+    end)
     if not ok then return false end
-    return code == 201 or code == 405
+    local success = code == 201 or code == 405
+    if success then
+        if not self._ensured_folders then self._ensured_folders = {} end
+        self._ensured_folders[rel_path] = true
+    end
+    return success
 end
 
 -- ── Merge helpers ──────────────────────────────────────────────────
@@ -234,7 +300,11 @@ end
 --     cover.png
 
 function WebDavSyncClient:pullChanges(params, callback)
+    logger.info("WebDavSyncClient pullChanges: type=" .. tostring(params and params.type)
+        .. " book=" .. tostring(params and params.book)
+        .. " since=" .. tostring(params and params.since))
     if not self:_serverReachable() then
+        logger.warn("WebDavSyncClient pullChanges: server unreachable")
         callback(false, {}, "unreachable")
         return
     end
@@ -282,15 +352,16 @@ function WebDavSyncClient:pullChanges(params, callback)
 end
 
 function WebDavSyncClient:pushChanges(changes, callback)
-    -- Ensure the base sync folder exists before writing anything.
-    local prev_timeout = http.TIMEOUT
-    http.TIMEOUT = SYNC_TIMEOUT
-    local mkcol_ok, mkcol_code = pcall(WebDavApi.createFolder, WebDavApi,
-        self:_url(""), self.username, self.password, "")
-    http.TIMEOUT = prev_timeout
-    if not mkcol_ok or (mkcol_code ~= 201 and mkcol_code ~= 405) then
-        logger.warn("WebDavSyncClient pushChanges: failed to create base folder, code=" .. tostring(mkcol_code))
-        callback(false, {}, mkcol_code)
+    logger.info("WebDavSyncClient pushChanges: configs="
+        .. tostring(changes.configs and #changes.configs or 0)
+        .. " notes=" .. tostring(changes.notes and #changes.notes or 0)
+        .. " statBooks=" .. tostring(changes.statBooks and #changes.statBooks or 0)
+        .. " statPages=" .. tostring(changes.statPages and #changes.statPages or 0)
+        .. " vocab=" .. tostring(changes.vocab and #changes.vocab or 0)
+        .. " books=" .. tostring(changes.books and #changes.books or 0))
+    if not self:_serverReachable() then
+        logger.warn("WebDavSyncClient pushChanges: server unreachable")
+        callback(false, {}, "unreachable")
         return
     end
     local ok = true
@@ -299,11 +370,16 @@ function WebDavSyncClient:pushChanges(changes, callback)
     if changes.configs and #changes.configs > 0 then
         local book_hash = changes.configs[1].bookHash
         if book_hash then
-            self:_ensureFolder("sync")
-            self:_ensureFolder("sync/" .. book_hash)
-            if not self:_writeJSON("sync/" .. book_hash .. "/progress.json",
-                    {configs = changes.configs}) then
-                ok = false
+            local progress_path = "sync/" .. book_hash .. "/progress.json"
+            if not self:_writeJSON(progress_path, {configs = changes.configs}) then
+                logger.warn("WebDavSyncClient pushChanges: progress write failed, repairing folders")
+                if self:_ensureFolder("sync") and self:_ensureFolder("sync/" .. book_hash) then
+                    if not self:_writeJSON(progress_path, {configs = changes.configs}) then
+                        ok = false
+                    end
+                else
+                    ok = false
+                end
             end
         end
     end
@@ -364,9 +440,14 @@ function WebDavSyncClient:pushChanges(changes, callback)
 end
 
 function WebDavSyncClient:pullBooks(params, callback)
+    logger.info("WebDavSyncClient pullBooks: since=" .. tostring(params and params.since))
     local since = tonumber(params.since) or 0
-    local data  = self:_readJSON("library.json")
+    local data, read_status = self:_readJSON("library.json")
     if not data or not data.books then
+        if read_status == READ_FAILED then
+            callback(false, {books = {}}, "read_failed")
+            return
+        end
         callback(true, {books = {}}, 200)
         return
     end

@@ -545,16 +545,26 @@ local function runOpenSync(opts, store, menu)
             .. tostring(opts.settings.user_id and opts.settings.user_id:sub(1, 8))
             .. " auto_sync=" .. tostring(opts.settings.auto_sync))
 
-        -- Clear cloud_present before pull so books deleted from the cloud
-        -- disappear here. Defer the refresh until AFTER the sync so the
-        -- library shows the last-known state instead of going blank.
-        store:clearCloudPresent()
-
         UIManager:scheduleIn(SYNC_DEFER_SECONDS, function()
-            if NetworkMgr:willRerunWhenOnline(function() runCloudSync(opts, store) end) then
-                return
+            local ok, err = xpcall(function()
+                logger.info("ReadestLibrary scheduled cloud sync: enter")
+                if NetworkMgr:willRerunWhenOnline(function()
+                        logger.info("ReadestLibrary network rerun: cloud sync")
+                        local rerun_ok, rerun_err = xpcall(function()
+                            runCloudSync(opts, store)
+                        end, debug.traceback)
+                        if not rerun_ok then
+                            logger.warn("ReadestLibrary network rerun failed: " .. tostring(rerun_err))
+                        end
+                    end) then
+                    logger.info("ReadestLibrary scheduled cloud sync: deferred until online")
+                    return
+                end
+                runCloudSync(opts, store)
+            end, debug.traceback)
+            if not ok then
+                logger.warn("ReadestLibrary scheduled cloud sync failed: " .. tostring(err))
             end
-            runCloudSync(opts, store)
         end)
     end)
 end

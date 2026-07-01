@@ -10,6 +10,11 @@ local EXTS = require("syncest_lib.exts")
 -- build_local_filename: where downloaded book bytes land on disk
 -- ---------------------------------------------------------------------------
 local MAX_BODY_LEN = 200
+local SYNC_TIMEOUT = 4
+
+local function now_ms()
+    return math.floor(os.time() * 1000)
+end
 
 function M.build_local_filename(book)
     if not book then return nil end
@@ -90,9 +95,64 @@ local function webdav(opts)
     return WebDavApi, url, srv.username or "", srv.password or ""
 end
 
+local function server_reachable(opts)
+    local logger = require("logger")
+    local socket = require("socket")
+    local srv = opts and opts.settings and opts.settings.sync_server or {}
+    local addr = srv.address or ""
+    local host = addr:match("https?://([^/:]+)")
+    if not host then
+        logger.warn("WebDavSync reachable: invalid server address")
+        return false
+    end
+    local port = tonumber(addr:match("//[^/]*:(%d+)"))
+        or (addr:match("^https://") and 443 or 80)
+    logger.info("WebDavSync reachable: checking host=" .. tostring(host)
+        .. " port=" .. tostring(port))
+    local ok, connected = pcall(function()
+        local s = socket.tcp()
+        if not s then return false end
+        s:settimeout(1)
+        local result = s:connect(host, port)
+        s:close()
+        return result == 1
+    end)
+    logger.info("WebDavSync reachable: ok=" .. tostring(ok)
+        .. " connected=" .. tostring(connected))
+    return ok and connected == true
+end
+
+local function safe_webdav_call(label, fn)
+    local logger = require("logger")
+    local http = require("socket.http")
+    local ok_sutil, socketutil = pcall(require, "socketutil")
+    local prev_timeout = http.TIMEOUT
+    local started = now_ms()
+
+    logger.info("WebDavSync " .. tostring(label) .. ": start timeout=" .. tostring(SYNC_TIMEOUT))
+    http.TIMEOUT = SYNC_TIMEOUT
+    if ok_sutil then pcall(function() socketutil:set_timeout(SYNC_TIMEOUT, SYNC_TIMEOUT) end) end
+
+    local ok, result = pcall(fn)
+
+    if ok_sutil then pcall(function() socketutil:reset_timeout() end) end
+    http.TIMEOUT = prev_timeout
+
+    if not ok then
+        logger.warn("WebDavSync " .. tostring(label) .. ": failed err="
+            .. tostring(result) .. " duration_ms=" .. tostring(now_ms() - started))
+        return nil, result
+    end
+    logger.info("WebDavSync " .. tostring(label) .. ": done result="
+        .. tostring(result) .. " duration_ms=" .. tostring(now_ms() - started))
+    return result
+end
+
 -- MKCOL tolerating 405 (already exists).
 local function ensure_folder(api, url, user, pass)
-    local code = api:createFolder(url, user, pass, "")
+    local code = safe_webdav_call("MKCOL", function()
+        return api:createFolder(url, user, pass, "")
+    end)
     return code == 201 or code == 405
 end
 
@@ -100,18 +160,16 @@ end
 local function webdav_delete(full_url, user, pass)
     local socket     = require("socket")
     local http       = require("socket.http")
-    local socketutil = require("socketutil")
     local ltn12      = require("ltn12")
-    socketutil:set_timeout()
-    local code = socket.skip(1, http.request{
-        url      = full_url,
-        method   = "DELETE",
-        user     = user,
-        password = pass,
-        sink     = ltn12.sink.null(),
-    })
-    socketutil:reset_timeout()
-    return code
+    return safe_webdav_call("DELETE", function()
+        return socket.skip(1, http.request{
+            url      = full_url,
+            method   = "DELETE",
+            user     = user,
+            password = pass,
+            sink     = ltn12.sink.null(),
+        })
+    end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -174,12 +232,14 @@ function M.pushChangedBooks(opts, cb)
             local uploaded, failed = 0, 0
             for _, row in ipairs(changed) do
                 if row.file_path and row.format then
-                    local ok_up, err_up = pcall(M.uploadBook, row, {
+                    logger.info("WebDavSync pushChangedBooks: upload candidate hash="
+                        .. tostring(row.hash) .. " format=" .. tostring(row.format))
+                    local call_ok, up_ok, err_up = pcall(M.uploadBook, row, {
                         client     = opts.client,
                         settings   = opts.settings,
                         covers_dir = covers_dir,
                     }, nil)
-                    if ok_up then
+                    if call_ok and up_ok then
                         uploaded = uploaded + 1
                         -- Set uploadedAt so the cloud library shows the file is available
                         row_to_wire(row).uploadedAt = os.time() * 1000
@@ -205,6 +265,8 @@ end
 -- ---------------------------------------------------------------------------
 function M.syncBooks(opts, mode, cb, before_push)
     mode = mode or "both"
+    local logger = require("logger")
+    logger.info("WebDavSync syncBooks: mode=" .. tostring(mode))
     if mode == "push" then
         if before_push then before_push() end
         M.pushChangedBooks(opts, cb)
@@ -233,9 +295,10 @@ function M.pullBooks(opts, cb)
     local logger       = require("logger")
     local LibraryStore = require("syncest_lib.librarystore")
     local client       = opts.client
+    local store        = opts.store
 
-    if not client then
-        if cb then cb(false, "no sync client") end
+    if not client or not store then
+        if cb then cb(false, "missing sync client or store") end
         return
     end
 
@@ -251,11 +314,12 @@ function M.pullBooks(opts, cb)
         local rows    = body and body.books or {}
         local max_ts  = 0
         local upserted = 0
+        store:clearCloudPresent()
         for _, raw in ipairs(rows) do
             local parsed = LibraryStore.parseSyncRow(raw)
             if parsed then
                 parsed.user_id = opts.settings.user_id
-                opts.store:upsertBook(parsed)
+                store:upsertBook(parsed)
                 upserted = upserted + 1
                 if parsed.updated_at and parsed.updated_at > max_ts then
                     max_ts = parsed.updated_at
@@ -265,7 +329,7 @@ function M.pullBooks(opts, cb)
                 end
             end
         end
-        if max_ts > 0 then opts.store:setLastPulledAt(max_ts) end
+        if max_ts > 0 then store:setLastPulledAt(max_ts) end
         logger.info("WebDavSync pullBooks: upserted=" .. upserted)
         if cb then cb(true, upserted) end
     end)
@@ -279,17 +343,22 @@ function M.downloadBook(book, opts, cb)
     local lfs    = require("libs/libkoreader-lfs")
     local api, url, user, pass = webdav(opts)
 
+    if not server_reachable(opts) then
+        if cb then cb(false, "unreachable") end
+        return false, "unreachable"
+    end
+
     local ext = EXTS[book.format]
     if not ext then
         if cb then cb(false, "unsupported format") end
-        return
+        return false, "unsupported format"
     end
 
     local rel   = string.format("books/%s/%s.%s", book.hash, book.hash, ext)
     local local_name = M.build_local_filename(book)
     if not local_name then
         if cb then cb(false, "could not build local filename") end
-        return
+        return false, "could not build local filename"
     end
 
     if not lfs.attributes(opts.download_dir, "mode") then
@@ -300,13 +369,17 @@ function M.downloadBook(book, opts, cb)
     end
     local dst = opts.download_dir .. "/" .. M.resolve_collision(local_name, exists)
 
-    logger.info("WebDavSync downloadBook: " .. rel .. " → " .. dst)
-    local code = api:downloadFile(url(rel), user, pass, dst)
+    logger.info("WebDavSync downloadBook: " .. rel .. " -> " .. dst)
+    local code, err = safe_webdav_call("downloadBook " .. rel, function()
+        return api:downloadFile(url(rel), user, pass, dst)
+    end)
     if code == 200 then
         if cb then cb(true, dst) end
+        return true, dst
     else
         os.remove(dst)
-        if cb then cb(false, "download failed", code) end
+        if cb then cb(false, err or "download failed", code) end
+        return false, err or "download failed", code
     end
 end
 
@@ -332,32 +405,42 @@ function M.uploadBook(book, opts, cb)
     local lfs    = require("libs/libkoreader-lfs")
     local api, url, user, pass = webdav(opts)
 
+    if not server_reachable(opts) then
+        if cb then cb(false, "unreachable") end
+        return false, "unreachable"
+    end
+
     if not book or not book.hash or not book.format or not book.file_path then
         if cb then cb(false, "missing book info") end
-        return
+        return false, "missing book info"
     end
     local ext = EXTS[book.format]
     if not ext then
         if cb then cb(false, "unsupported format") end
-        return
+        return false, "unsupported format"
     end
     if not lfs.attributes(book.file_path, "mode") then
         if cb then cb(false, "local file missing") end
-        return
+        return false, "local file missing"
     end
 
     -- Ensure books/{hash}/ folder exists
     local book_dir = string.format("books/%s", book.hash)
-    ensure_folder(api, url("books"), user, pass)
-    ensure_folder(api, url(book_dir), user, pass)
+    if not ensure_folder(api, url("books"), user, pass)
+            or not ensure_folder(api, url(book_dir), user, pass) then
+        if cb then cb(false, "could not create cloud folder") end
+        return false, "could not create cloud folder"
+    end
 
     -- Upload book file
     local file_rel = string.format("books/%s/%s.%s", book.hash, book.hash, ext)
     logger.info("WebDavSync uploadBook: uploading " .. file_rel)
-    local code = api:uploadFile(url(file_rel), user, pass, book.file_path)
+    local code, err = safe_webdav_call("uploadBook " .. file_rel, function()
+        return api:uploadFile(url(file_rel), user, pass, book.file_path)
+    end)
     if type(code) ~= "number" or code < 200 or code > 299 then
-        if cb then cb(false, "book upload failed", code) end
-        return
+        if cb then cb(false, err or "book upload failed", code) end
+        return false, err or "book upload failed", code
     end
 
     -- Upload cover (best-effort)
@@ -377,18 +460,27 @@ function M.uploadBook(book, opts, cb)
 
     if has_cover then
         local cover_rel = string.format("books/%s/cover.png", book.hash)
-        api:uploadFile(url(cover_rel), user, pass, cover_path)
+        safe_webdav_call("uploadCover " .. cover_rel, function()
+            return api:uploadFile(url(cover_rel), user, pass, cover_path)
+        end)
     end
 
     if cb then cb(true) end
+    return true
 end
 
 -- ---------------------------------------------------------------------------
 -- downloadCover — fetch cover.png from WebDAV books/{hash}/cover.png
 -- ---------------------------------------------------------------------------
 function M.downloadCover(book, opts, cb)
+    local logger = require("logger")
     local lfs = require("libs/libkoreader-lfs")
     local api, url, user, pass = webdav(opts)
+
+    if not server_reachable(opts) then
+        if cb then cb(false, "unreachable") end
+        return false, "unreachable"
+    end
 
     local rel = string.format("books/%s/cover.png", book.hash)
     if not lfs.attributes(opts.covers_dir, "mode") then
@@ -396,15 +488,21 @@ function M.downloadCover(book, opts, cb)
     end
     local dst = opts.covers_dir .. "/" .. book.hash .. ".png"
 
-    local code = api:downloadFile(url(rel), user, pass, dst)
+    logger.info("WebDavSync downloadCover: " .. rel .. " -> " .. dst)
+    local code, err = safe_webdav_call("downloadCover " .. rel, function()
+        return api:downloadFile(url(rel), user, pass, dst)
+    end)
     if code == 200 then
         if cb then cb(true, dst) end
+        return true, dst
     elseif code == 404 then
         os.remove(dst)
         if cb then cb(false, "no-cover", 404) end
+        return false, "no-cover", 404
     else
         os.remove(dst)
-        if cb then cb(false, "download failed", code) end
+        if cb then cb(false, err or "download failed", code) end
+        return false, err or "download failed", code
     end
 end
 
@@ -415,9 +513,14 @@ function M.deleteCloudFiles(book, opts, cb)
     local logger = require("logger")
     local _, url, user, pass = webdav(opts)
 
+    if not server_reachable(opts) then
+        if cb then cb(false, "unreachable") end
+        return false, "unreachable"
+    end
+
     if not book or not book.hash then
         if cb then cb(false, "missing book") end
-        return
+        return false, "missing book"
     end
 
     local rel  = string.format("books/%s/", book.hash)
@@ -426,6 +529,7 @@ function M.deleteCloudFiles(book, opts, cb)
 
     local ok = code == 200 or code == 204 or code == 404
     if cb then cb(ok, ok and 1 or 0, code) end
+    return ok, code
 end
 
 return M
