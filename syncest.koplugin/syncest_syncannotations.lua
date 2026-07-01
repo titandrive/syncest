@@ -409,7 +409,9 @@ function SyncAnnotations:applyPulledNotes(ui, settings, notes, book_hash, dialog
     if added > 0 or removed > 0 then
         UIManager:setDirty(dialog, "ui")
     end
-    if notify_fn then notify_fn("annotations", "pulled") end
+    if notify_fn and (added > 0 or removed > 0) then
+        notify_fn("annotations", "updated")
+    end
     return true
 end
 

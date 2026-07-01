@@ -189,7 +189,11 @@ end
 
 function Syncest:_backgroundPushProgress(payload, notify)
     if self._auto_push_progress_running then
-        logger.info("Syncest background progress push: already running, skipped")
+        logger.info("Syncest background progress push: already running, queued")
+        self._pending_auto_push_progress = {
+            payload = payload,
+            notify = notify,
+        }
         return false
     end
     local server = self.settings and self.settings.sync_server
@@ -269,6 +273,11 @@ function Syncest:_backgroundPushProgress(payload, notify)
             logger.warn("Syncest background progress push: failed "
                 .. tostring(message))
             if notify then self:_autoFailureNotify("progress") end
+        end
+        local pending = self._pending_auto_push_progress
+        if pending then
+            self._pending_auto_push_progress = nil
+            self:_backgroundPushProgress(pending.payload, pending.notify)
         end
     end
     UIManager:scheduleIn(AUTO_SYNC_POLL_INTERVAL, poll)
@@ -372,10 +381,10 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
             self.ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
             self.ui.doc_settings:flush()
         end
-        if notify then self:_autoNotify("progress", "pulled") end
         if result.config then
             SyncConfig:applyBookConfig(self.ui, result.config, force_apply == true)
         end
+        if notify then self:_autoNotify("progress", "pulled", 0) end
     end
     UIManager:scheduleIn(AUTO_SYNC_POLL_INTERVAL, poll)
     return true
@@ -676,6 +685,7 @@ Syncest.default_settings = {
     auto_sync                = false,
     -- Granular auto sync flags (all default on; only meaningful when auto_sync=true)
     auto_push_progress       = true,
+    auto_push_progress_close = true,
     push_every_x_pages       = true,
     push_page_interval       = 1,
     auto_pull_progress       = true,
@@ -692,26 +702,72 @@ Syncest.default_settings = {
 
 -- ── Lifecycle ──────────────────────────────────────────────────────
 
-function Syncest:_autoNotify(label, action)
-    if not self._notify_labels then self._notify_labels = {} end
-    self._notify_labels[label] = action
-    if self._notify_task then UIManager:unschedule(self._notify_task) end
-    self._notify_task = function()
-        local order = { "progress", "annotations", "stats", "vocab" }
-        local parts = {}
-        for _, k in ipairs(order) do
-            if self._notify_labels[k] then
-                parts[#parts + 1] = k .. " " .. self._notify_labels[k]
-            end
+function Syncest:_flushAutoNotify()
+    if not self._notify_labels then
+        self._notify_task = nil
+        self._notify_batching = nil
+        self._notify_action_filter = nil
+        self._notify_batch_flush_delay = nil
+        return
+    end
+    local order = { "progress", "annotations", "stats", "vocab" }
+    local parts = {}
+    for _, k in ipairs(order) do
+        if self._notify_labels[k] then
+            parts[#parts + 1] = k .. " " .. self._notify_labels[k]
         end
+    end
+    if #parts > 0 then
         UIManager:show(Notification:new{
             text = table.concat(parts, ", "),
             timeout = 2,
         })
-        self._notify_labels = nil
-        self._notify_task = nil
     end
-    UIManager:scheduleIn(0.5, self._notify_task)
+    self._notify_labels = nil
+    self._notify_task = nil
+    self._notify_batching = nil
+    self._notify_action_filter = nil
+    self._notify_batch_flush_delay = nil
+end
+
+function Syncest:_beginAutoNotifyBatch(timeout, reset, action_filter, flush_delay)
+    if self._notify_task then UIManager:unschedule(self._notify_task) end
+    if reset then self._notify_labels = nil end
+    self._notify_batching = true
+    self._notify_action_filter = action_filter
+    self._notify_batch_flush_delay = flush_delay
+    self._notify_task = function()
+        self:_flushAutoNotify()
+    end
+    UIManager:scheduleIn(timeout or 10, self._notify_task)
+end
+
+function Syncest:_autoNotify(label, action, delay)
+    if self._notify_action_filter then
+        if type(self._notify_action_filter) == "table" then
+            local allowed = false
+            for _, value in ipairs(self._notify_action_filter) do
+                if action == value then
+                    allowed = true
+                    break
+                end
+            end
+            if not allowed then return end
+        elseif action ~= self._notify_action_filter then
+            return
+        end
+    end
+    if not self._notify_labels then self._notify_labels = {} end
+    self._notify_labels[label] = action
+    if self._notify_task then UIManager:unschedule(self._notify_task) end
+    self._notify_task = function()
+        self:_flushAutoNotify()
+    end
+    if self._notify_batching then
+        UIManager:scheduleIn(self._notify_batch_flush_delay or 1.5, self._notify_task)
+        return
+    end
+    UIManager:scheduleIn(delay or 0.5, self._notify_task)
 end
 
 function Syncest:_autoFailureNotify(_label)
@@ -728,6 +784,21 @@ function Syncest:_autoFailureNotify(_label)
         self._failure_notify_task = nil
     end
     UIManager:scheduleIn(0.2, self._failure_notify_task)
+end
+
+function Syncest:_cancelAutoPullTasks()
+    local tasks = {
+        "_auto_pull_progress_task",
+        "_auto_pull_annotations_task",
+        "_auto_pull_stats_task",
+        "_auto_pull_vocab_task",
+    }
+    for _, name in ipairs(tasks) do
+        if self[name] then
+            UIManager:unschedule(self[name])
+            self[name] = nil
+        end
+    end
 end
 
 function Syncest:_syncConnectionRestored()
@@ -832,34 +903,42 @@ function Syncest:onReaderReady()
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
         if STARTUP_AUTO_PULL_PROGRESS_ENABLED
                 and self.settings.auto_pull_progress ~= false then
-            UIManager:scheduleIn(0.5, function()
+            self._auto_pull_progress_task = function()
+                self._auto_pull_progress_task = nil
                 self:_runSafely("auto pull progress", function()
                     self:pullBookConfig(false, true)
                 end)
-            end)
+            end
+            UIManager:scheduleIn(0, self._auto_pull_progress_task)
         else
             logger.warn("Syncest onReaderReady: startup auto progress pull disabled")
         end
         if self.settings.auto_pull_annotations ~= false then
-            UIManager:scheduleIn(4, function()
+            self._auto_pull_annotations_task = function()
+                self._auto_pull_annotations_task = nil
                 self:_runSafely("auto pull annotations", function()
                     self:pullBookNotes(false, false, true)
                 end)
-            end)
+            end
+            UIManager:scheduleIn(0.75, self._auto_pull_annotations_task)
         end
         if self.settings.auto_pull_stats ~= false then
-            UIManager:scheduleIn(8, function()
+            self._auto_pull_stats_task = function()
+                self._auto_pull_stats_task = nil
                 self:_runSafely("auto pull stats", function()
-                    self:pullBookStats(false, true)
+                    self:pullBookStats(false, false)
                 end)
-            end)
+            end
+            UIManager:scheduleIn(8, self._auto_pull_stats_task)
         end
         if self.settings.auto_pull_vocab ~= false then
-            UIManager:scheduleIn(16, function()
+            self._auto_pull_vocab_task = function()
+                self._auto_pull_vocab_task = nil
                 self:_runSafely("auto pull vocab", function()
                     self:pullVocab(false, true)
                 end)
-            end)
+            end
+            UIManager:scheduleIn(16, self._auto_pull_vocab_task)
         end
     end
     self._last_pushed_page = nil
@@ -1182,6 +1261,18 @@ function Syncest:addToMainMenu(menu_items)
                                     end
                                 end,
                             })
+                        end,
+                    },
+                    {
+                        text = _("Push reading progress on book close"),
+                        enabled_func = function() return self.settings.auto_sync end,
+                        checked_func = function()
+                            return self.settings.auto_push_progress_close ~= false
+                        end,
+                        callback = function()
+                            self.settings.auto_push_progress_close =
+                                self.settings.auto_push_progress_close == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
                         end,
                     },
                     {
@@ -1795,8 +1886,10 @@ function Syncest:onCloseDocument()
             return
         end
         pcall(function()
-            if self.settings.auto_push_progress ~= false then
-                self:pushBookConfig(false, true)
+            self:_cancelAutoPullTasks()
+            self:_beginAutoNotifyBatch(20, true, "pushed")
+            if self.settings.auto_push_progress_close ~= false then
+                self:pushBookConfigAsync(true)
             end
             if self.settings.auto_push_stats ~= false then
                 self:pushBookStats(false, true)
@@ -1871,6 +1964,7 @@ function Syncest:onAnnotationsModified(items)
 end
 
 function Syncest:onCloseWidget()
+    self:_cancelAutoPullTasks()
     if self.delayed_push_task then
         UIManager:unschedule(self.delayed_push_task)
         self.delayed_push_task = nil
