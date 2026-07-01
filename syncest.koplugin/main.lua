@@ -46,6 +46,7 @@ local STARTUP_AUTO_PULL_PROGRESS_ENABLED = true
 local SYNC_PLUGIN_INERT_DIAGNOSTIC = false
 local AUTO_SYNC_POLL_INTERVAL = 0.25
 local AUTO_SYNC_MAX_POLLS = 80
+local BOOKS_SYNC_MAX_POLLS = 1200
 
 local function write_background_result(path, success, message)
     local file = io.open(path, "w")
@@ -91,6 +92,18 @@ local function read_background_json_result(path)
     return parsed
 end
 
+local function peek_background_json_result(path)
+    local file = io.open(path, "r")
+    if not file then return nil end
+    local content = file:read("*a")
+    file:close()
+    local ok_json, json = pcall(require, "json")
+    if not ok_json then return nil end
+    local ok, parsed = pcall(json.decode, content or "")
+    if not ok or type(parsed) ~= "table" then return nil end
+    return parsed
+end
+
 local function copy_settings(settings)
     local copied = {}
     for k, v in pairs(settings or {}) do
@@ -118,7 +131,7 @@ function Syncest:_runSafely(label, fn, interactive)
     return false
 end
 
-function Syncest:_runBackgroundJSON(label, result_prefix, child_fn, on_complete, on_failure)
+function Syncest:_runBackgroundJSON(label, result_prefix, child_fn, on_complete, on_failure, max_polls, on_poll)
     if not self._background_jobs then self._background_jobs = {} end
     if self._background_jobs[label] then
         logger.info("Syncest " .. label .. ": already running, skipped")
@@ -156,8 +169,9 @@ function Syncest:_runBackgroundJSON(label, result_prefix, child_fn, on_complete,
     local poll
     poll = function()
         polls = polls + 1
+        if on_poll then on_poll() end
         if not FFIUtil.isSubProcessDone(pid) then
-            if polls < AUTO_SYNC_MAX_POLLS then
+            if polls < (max_polls or AUTO_SYNC_MAX_POLLS) then
                 UIManager:scheduleIn(AUTO_SYNC_POLL_INTERVAL, poll)
                 return
             end
@@ -770,6 +784,36 @@ function Syncest:_autoNotify(label, action, delay)
     UIManager:scheduleIn(delay or 0.5, self._notify_task)
 end
 
+function Syncest:_showConnectionNotification(kind)
+    local now = os.time()
+    if self._last_connection_notification == kind
+        and self._last_connection_notification_at
+        and now - self._last_connection_notification_at < 5 then
+        return
+    end
+    self._last_connection_notification = kind
+    self._last_connection_notification_at = now
+    UIManager:show(Notification:new{
+        text = kind == "connected"
+            and _("Syncest connected")
+            or _("Syncest disconnected"),
+        timeout = kind == "connected" and 2 or 3,
+    })
+end
+
+function Syncest:_showBooksSyncNotification(text, timeout)
+    if self._books_sync_notification then
+        pcall(function() UIManager:close(self._books_sync_notification) end)
+        self._books_sync_notification = nil
+    end
+    local notification = Notification:new{
+        text = text,
+        timeout = timeout or 60,
+    }
+    self._books_sync_notification = notification
+    UIManager:show(notification)
+end
+
 function Syncest:_autoFailureNotify(_label)
     if self._syncest_connection_state == false then return end
     self._syncest_connection_state = false
@@ -777,10 +821,9 @@ function Syncest:_autoFailureNotify(_label)
         UIManager:unschedule(self._failure_notify_task)
     end
     self._failure_notify_task = function()
-        UIManager:show(Notification:new{
-            text = _("Syncest disconnected"),
-            timeout = 3,
-        })
+        if self._syncest_connection_state == false then
+            self:_showConnectionNotification("disconnected")
+        end
         self._failure_notify_task = nil
     end
     UIManager:scheduleIn(0.2, self._failure_notify_task)
@@ -811,10 +854,7 @@ function Syncest:_syncConnectionRestored()
         return
     end
     self._syncest_connection_state = true
-    UIManager:show(Notification:new{
-        text = _("Syncest connected"),
-        timeout = 2,
-    })
+    self:_showConnectionNotification("connected")
 end
 
 function Syncest:init()
@@ -1384,18 +1424,6 @@ function Syncest:addToMainMenu(menu_items)
                 callback = function() self:syncBooksLibrary("pull", true) end,
                 separator = true,
             },
-            -- ── Push/Pull All ───────────────────────────────────────
-            {
-                text = _("Push all now"),
-                enabled_func = function() return configured end,
-                callback = function() self:pushAll(true) end,
-            },
-            {
-                text = _("Pull all now"),
-                enabled_func = function() return configured end,
-                callback = function() self:pullAll(true) end,
-                separator = true,
-            },
             -- ── Stats & Vocab ───────────────────────────────────────
             {
                 text = _("Push stats now"),
@@ -1416,6 +1444,18 @@ function Syncest:addToMainMenu(menu_items)
                 text = _("Pull vocab now"),
                 enabled_func = function() return configured end,
                 callback = function() self:pullVocab(false, true) end,
+                separator = true,
+            },
+            -- ── Push/Pull All ───────────────────────────────────────
+            {
+                text = _("Push all now"),
+                enabled_func = function() return configured end,
+                callback = function() self:pushAll(true) end,
+            },
+            {
+                text = _("Pull all now"),
+                enabled_func = function() return configured end,
+                callback = function() self:pullAll(true) end,
             },
         }
 
@@ -1798,6 +1838,121 @@ function Syncest:touchOpenBook()
     return touched
 end
 
+function Syncest:_backgroundSyncBooksLibrary(mode, interactive)
+    local settings = copy_settings(self.settings)
+    local server = settings and settings.sync_server
+    if type(server) ~= "table" or not settings.user_id or settings.user_id == "" then
+        if interactive then
+            UIManager:show(InfoMessage:new{ text = _("Configure WebDAV sync first"), timeout = 2 })
+        end
+        return false
+    end
+
+    local DataStorage = require("datastorage")
+    local db_path = DataStorage:getSettingsDir() .. "/syncest_library.sqlite3"
+    local result_prefix = "syncest_books_" .. tostring(mode or "both")
+    local progress_file = DataStorage:getSettingsDir()
+        .. "/" .. result_prefix .. "_progress_" .. tostring(os.time()) .. ".json"
+    local last_progress_key
+    os.remove(progress_file)
+    local launched = self:_runBackgroundJSON(
+        "background books " .. tostring(mode or "both"),
+        result_prefix,
+        function()
+            local WebDavAuthChild = require("webdav_auth")
+            local LibraryStore = require("syncest_lib.librarystore")
+            local syncbooks = require("syncest_lib.syncbooks")
+            local store = LibraryStore.new({
+                user_id = settings.user_id,
+                db_path = db_path,
+            })
+            local client = WebDavAuthChild:getClient(settings)
+            local done_success, done_msg, done_status
+            syncbooks.syncBooks({
+                client = client,
+                settings = settings,
+                store = store,
+                on_upload_progress = function(progress)
+                    write_background_json_result(progress_file, progress)
+                end,
+            }, mode, function(success, msg, status)
+                done_success = success == true
+                done_msg = msg
+                done_status = status
+            end)
+            store:close()
+            if not done_success then
+                return {
+                    success = false,
+                    message = done_msg or "books sync failed",
+                    status = done_status,
+                }
+            end
+            local result = {
+                success = true,
+                message = done_msg,
+                status = done_status,
+            }
+            if mode == "push" or mode == "both" then
+                result.catalog_last_pushed_at = os.time()
+            end
+            return result
+        end,
+        function(result)
+            if result.catalog_last_pushed_at then
+                self.settings.catalog_last_pushed_at = result.catalog_last_pushed_at
+                G_reader_settings:saveSetting("webdav_sync", self.settings)
+            end
+            if interactive then
+                self:_showBooksSyncNotification(
+                    (mode == "push" or mode == "both")
+                        and _("Books upload finished")
+                        or _("Books sync finished"),
+                    8
+                )
+            end
+            local LibraryWidget = require("syncest_lib.librarywidget")
+            if LibraryWidget._menu then LibraryWidget.refresh() end
+            os.remove(progress_file)
+        end,
+        function(message)
+            if interactive then
+                self:_showBooksSyncNotification(
+                    "Books sync failed: " .. tostring(message),
+                    8
+                )
+            end
+            os.remove(progress_file)
+        end,
+        BOOKS_SYNC_MAX_POLLS,
+        function()
+            if not interactive then return end
+            local progress = peek_background_json_result(progress_file)
+            if not progress or not progress.total or progress.total <= 0 then return end
+            local done = tonumber(progress.done) or 0
+            local total = tonumber(progress.total) or 0
+            local failed = tonumber(progress.failed) or 0
+            local key = tostring(done) .. "/" .. tostring(total) .. "/" .. tostring(failed)
+            if key == last_progress_key then return end
+            last_progress_key = key
+            local text = failed > 0
+                and string.format("Books uploading %d/%d (%d failed)", done, total, failed)
+                or string.format("Books uploading %d/%d", done, total)
+            self:_showBooksSyncNotification(text, 60)
+        end
+    )
+
+    if launched and interactive then
+        self:_showBooksSyncNotification(
+            (mode == "push" or mode == "both")
+                and _("Books upload started")
+                or _("Books sync started"),
+            60
+        )
+    end
+    return launched
+end
+
 function Syncest:syncBooksLibrary(mode, interactive)
     if WebDavAuth:needsSetup(self.settings) then
         if interactive then
@@ -1817,31 +1972,9 @@ function Syncest:syncBooksLibrary(mode, interactive)
         local localscanner = require("syncest_lib.localscanner")
         local home_dir = G_reader_settings:readSetting("home_dir") or "/sdcard/Books"
         pcall(localscanner.dirScan, { store = store, dir = home_dir })
-    end
-    local client = WebDavAuth:getClient(self.settings)
-    local syncbooks = require("syncest_lib.syncbooks")
-    syncbooks.syncBooks({
-        client   = client,
-        settings = self.settings,
-        store    = store,
-    }, mode, function(success, msg, _status)
-        if success and (mode == "push" or mode == "both") then
-            self.settings.catalog_last_pushed_at = os.time()
-            G_reader_settings:saveSetting("webdav_sync", self.settings)
-        end
-        if interactive then
-            UIManager:show(InfoMessage:new{
-                text = success
-                    and _("Books synced")
-                    or  ("Books sync failed: " .. tostring(msg)),
-                timeout = success and 2 or 8,
-            })
-        end
-        local LibraryWidget = require("syncest_lib.librarywidget")
-        if LibraryWidget._menu then LibraryWidget.refresh() end
-    end, function()
         self:touchOpenBook()
-    end)
+    end
+    self:_backgroundSyncBooksLibrary(mode, interactive)
 end
 
 -- ── Event handlers ─────────────────────────────────────────────────

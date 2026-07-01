@@ -95,10 +95,6 @@ function WebDavAuth:disconnect(settings, touchmenu_instance)
     settings.user_name   = nil
     G_reader_settings:saveSetting("webdav_sync", settings)
     if touchmenu_instance then touchmenu_instance:updateItems() end
-    UIManager:show(InfoMessage:new{
-        text = _("Syncest disconnected"),
-        timeout = 2,
-    })
 end
 
 return WebDavAuth

@@ -256,6 +256,20 @@ function M.pushChangedBooks(opts, cb)
             local DataStorage = require("datastorage")
             local covers_dir = DataStorage:getSettingsDir() .. "/syncest_covers"
             local uploaded, failed = 0, 0
+            local total_uploads = 0
+            for _, row in ipairs(changed) do
+                if row.file_path and row.format then
+                    total_uploads = total_uploads + 1
+                end
+            end
+            if opts.on_upload_progress and total_uploads > 0 then
+                opts.on_upload_progress({
+                    uploaded = uploaded,
+                    failed = failed,
+                    done = 0,
+                    total = total_uploads,
+                })
+            end
             for _, row in ipairs(changed) do
                 if row.file_path and row.format then
                     logger.info("WebDavSync pushChangedBooks: upload candidate hash="
@@ -272,6 +286,16 @@ function M.pushChangedBooks(opts, cb)
                     else
                         failed = failed + 1
                         logger.warn("Syncest uploadBook failed: " .. tostring(err_up))
+                    end
+                    if opts.on_upload_progress then
+                        opts.on_upload_progress({
+                            uploaded = uploaded,
+                            failed = failed,
+                            done = uploaded + failed,
+                            total = total_uploads,
+                            title = row.title,
+                            hash = row.hash,
+                        })
                     end
                 end
             end
@@ -430,11 +454,6 @@ function M.uploadBook(book, opts, cb)
     local logger = require("logger")
     local lfs    = require("libs/libkoreader-lfs")
     local api, url, user, pass = webdav(opts)
-
-    if not server_reachable(opts) then
-        if cb then cb(false, "unreachable") end
-        return false, "unreachable"
-    end
 
     if not book or not book.hash or not book.format or not book.file_path then
         if cb then cb(false, "missing book info") end
