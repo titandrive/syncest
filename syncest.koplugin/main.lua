@@ -1633,7 +1633,6 @@ function Syncest:pushAll(interactive)
         end
         self:pushBookStats(false, true)
         self:pushVocab(false, true)
-        self:syncBooksLibrary("push", interactive)
     end, interactive)
 end
 
@@ -1646,7 +1645,6 @@ function Syncest:pullAll(interactive)
         end
         self:pullBookStats(false, true)
         self:pullVocab(false, true)
-        self:syncBooksLibrary("pull", interactive)
     end, interactive)
 end
 

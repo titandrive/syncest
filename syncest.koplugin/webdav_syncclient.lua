@@ -4,6 +4,7 @@ local json = require("json")
 local logger = require("logger")
 local http = require("socket.http")
 local ltn12 = require("ltn12")
+local ok_socket, socket = pcall(require, "socket")
 
 -- LuaSocket reads http.TIMEOUT on every new TCP connection, so this caps
 -- the OS-level TCP connect + transfer time and prevents ANR crashes when
@@ -52,8 +53,11 @@ function WebDavSyncClient:_url(rel_path)
     return base
 end
 
-local function tmp_path()
-    return DataStorage:getSettingsDir() .. "/syncest_tmp.json"
+local function tmp_path(rel_path)
+    local suffix = tostring(rel_path or "root"):gsub("[^%w%.%-_]", "_")
+    local now = ok_socket and socket.gettime and socket.gettime() or os.time()
+    local nonce = tostring(now):gsub("[^%w]", "_") .. "_" .. tostring(math.random(1000000))
+    return DataStorage:getSettingsDir() .. "/syncest_tmp_" .. nonce .. "_" .. suffix .. ".json"
 end
 
 function WebDavSyncClient:_markPathExists(rel_path)
@@ -69,7 +73,7 @@ end
 -- ── JSON read/write ────────────────────────────────────────────────
 
 function WebDavSyncClient:_readJSON(rel_path)
-    local tmp = tmp_path()
+    local tmp = tmp_path(rel_path)
     local ok, code = withTimeout("readJSON " .. tostring(rel_path), function()
         return WebDavApi:downloadFile(
             self:_url(rel_path), self.username, self.password, tmp)
@@ -109,7 +113,7 @@ function WebDavSyncClient:_writeJSON(rel_path, data)
         logger.warn("WebDavSyncClient _writeJSON: encode error: " .. tostring(encoded))
         return false
     end
-    local tmp = tmp_path()
+    local tmp = tmp_path(rel_path)
     local f = io.open(tmp, "w")
     if not f then return false end
     f:write(encoded)
