@@ -140,6 +140,46 @@ local function marker_metadata(metadata)
     return copied
 end
 
+local function is_array(t)
+    local count = 0
+    for k in pairs(t) do
+        if type(k) ~= "number" or k < 1 or k % 1 ~= 0 then return false end
+        count = count + 1
+    end
+    for i = 1, count do
+        if t[i] == nil then return false end
+    end
+    return true, count
+end
+
+local function encode_pretty_json(value, indent)
+    indent = indent or ""
+    if type(value) ~= "table" then return json.encode(value) end
+
+    local child_indent = indent .. "  "
+    local array, count = is_array(value)
+    local parts = {}
+    if array then
+        for i = 1, count do
+            parts[#parts + 1] = child_indent .. encode_pretty_json(value[i], child_indent)
+        end
+        if #parts == 0 then return "[]" end
+        return "[\n" .. table.concat(parts, ",\n") .. "\n" .. indent .. "]"
+    end
+
+    local keys = {}
+    for k, v in pairs(value) do
+        if v ~= nil then keys[#keys + 1] = k end
+    end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    for _, k in ipairs(keys) do
+        parts[#parts + 1] = child_indent .. json.encode(tostring(k)) .. ": "
+            .. encode_pretty_json(value[k], child_indent)
+    end
+    if #parts == 0 then return "{}" end
+    return "{\n" .. table.concat(parts, ",\n") .. "\n" .. indent .. "}"
+end
+
 local function safe_title_filename(title)
     local name = tostring(title or ""):gsub("^%s*(.-)%s*$", "%1")
     if name == "" then name = "Untitled" end
@@ -267,6 +307,37 @@ function WebDavSyncClient:_writeJSON(rel_path, data)
     return success
 end
 
+function WebDavSyncClient:_writePrettyJSON(rel_path, data)
+    logger.info("WebDavSyncClient writePrettyJSON " .. tostring(rel_path) .. ": encoding")
+    local ok, encoded = pcall(encode_pretty_json, data)
+    if not ok then
+        logger.warn("WebDavSyncClient _writePrettyJSON: encode error: " .. tostring(encoded))
+        return false
+    end
+    encoded = encoded .. "\n"
+    local tmp = tmp_path(rel_path)
+    local f = io.open(tmp, "w")
+    if not f then return false end
+    f:write(encoded)
+    f:close()
+    local full_url = self:_url(rel_path)
+    local ok2, code = withTimeout("writePrettyJSON " .. tostring(rel_path), function()
+        return WebDavApi:uploadFile(full_url, self.username, self.password, tmp)
+    end)
+    os.remove(tmp)
+    if not ok2 then
+        logger.warn("WebDavSyncClient _writePrettyJSON: network error for " .. rel_path .. ": " .. tostring(code))
+        return false
+    end
+    local success = type(code) == "number" and code >= 200 and code < 300
+    if not success then
+        logger.warn("WebDavSyncClient _writePrettyJSON: upload failed code=" .. tostring(code) .. " url=" .. full_url)
+    else
+        self:_markPathExists(rel_path)
+    end
+    return success
+end
+
 function WebDavSyncClient:_writeBookMarker(folder, book)
     if not folder or type(book) ~= "table" then return true end
     local hash = book.bookHash or book.hash or book.book_hash
@@ -322,7 +393,19 @@ function WebDavSyncClient:_writeBookMarker(folder, book)
         bookUpdatedAt = book.updatedAt,
         updatedAt = os.time() * 1000,
     }
-    return self:_writeJSON(folder .. "/" .. safe_title_filename(title), marker)
+    return self:_writePrettyJSON(folder .. "/" .. safe_title_filename(title), marker)
+end
+
+function WebDavSyncClient:_ensureBookMarker(folder, book)
+    if not folder or type(book) ~= "table" then return true end
+    local meta = book.bookMetadata or book.metadata or {}
+    local title = meta.title or book.title or book.sourceTitle or book.source_title
+    local marker_path = folder .. "/" .. safe_title_filename(title)
+    local _existing, read_status = self:_readJSON(marker_path)
+    if read_status == READ_MISSING then
+        return self:_writeBookMarker(folder, book)
+    end
+    return read_status ~= READ_FAILED
 end
 
 local function strip_marker_metadata(configs)
@@ -558,7 +641,9 @@ function WebDavSyncClient:pushChanges(changes, callback)
         if book_hash then
             local progress_configs = strip_marker_metadata(changes.configs)
             local progress_path = "sync/" .. book_hash .. "/progress.json"
-            if not self:_writeJSON(progress_path, {configs = progress_configs}) then
+            if self:_writeJSON(progress_path, {configs = progress_configs}) then
+                self:_ensureBookMarker("sync/" .. book_hash, changes.configs[1])
+            else
                 logger.warn("WebDavSyncClient pushChanges: progress write failed, repairing folders")
                 if self:_ensureFolder("sync") and self:_ensureFolder("sync/" .. book_hash) then
                     self:_writeBookMarker("sync/" .. book_hash, changes.configs[1])
@@ -586,7 +671,9 @@ function WebDavSyncClient:pushChanges(changes, callback)
                 remote = remote or {notes = {}}
                 local notes = strip_note_marker_metadata(changes.notes)
                 local merged = self:_mergeNotes(remote.notes or {}, notes)
-                if not self:_writeJSON(ann_path, {notes = merged}) then
+                if self:_writeJSON(ann_path, {notes = merged}) then
+                    self:_ensureBookMarker("sync/" .. book_hash, changes.notes[1])
+                else
                     logger.warn("WebDavSyncClient pushChanges: annotations write failed, repairing folders")
                     if self:_ensureFolder("sync") and self:_ensureFolder("sync/" .. book_hash) then
                         self:_writeBookMarker("sync/" .. book_hash, changes.notes[1])

@@ -133,17 +133,57 @@ local function marker_metadata(metadata)
     return copied
 end
 
-local function write_temp_json(data)
+local function is_array(t)
+    local count = 0
+    for k in pairs(t) do
+        if type(k) ~= "number" or k < 1 or k % 1 ~= 0 then return false end
+        count = count + 1
+    end
+    for i = 1, count do
+        if t[i] == nil then return false end
+    end
+    return true, count
+end
+
+local function encode_pretty_json(value, indent)
     local json = require("json")
+    indent = indent or ""
+    if type(value) ~= "table" then return json.encode(value) end
+
+    local child_indent = indent .. "  "
+    local array, count = is_array(value)
+    local parts = {}
+    if array then
+        for i = 1, count do
+            parts[#parts + 1] = child_indent .. encode_pretty_json(value[i], child_indent)
+        end
+        if #parts == 0 then return "[]" end
+        return "[\n" .. table.concat(parts, ",\n") .. "\n" .. indent .. "]"
+    end
+
+    local keys = {}
+    for k, v in pairs(value) do
+        if v ~= nil then keys[#keys + 1] = k end
+    end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    for _, k in ipairs(keys) do
+        parts[#parts + 1] = child_indent .. json.encode(tostring(k)) .. ": "
+            .. encode_pretty_json(value[k], child_indent)
+    end
+    if #parts == 0 then return "{}" end
+    return "{\n" .. table.concat(parts, ",\n") .. "\n" .. indent .. "}"
+end
+
+local function write_temp_json(data)
     local DataStorage = require("datastorage")
     local path = DataStorage:getSettingsDir()
         .. "/syncest_book_marker_" .. tostring(os.time())
         .. "_" .. tostring(math.random(1000000)) .. ".json"
-    local ok, encoded = pcall(json.encode, data)
+    local ok, encoded = pcall(encode_pretty_json, data)
     if not ok then return nil end
     local f = io.open(path, "w")
     if not f then return nil end
-    f:write(encoded)
+    f:write(encoded, "\n")
     f:close()
     return path
 end
