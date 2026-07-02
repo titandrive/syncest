@@ -655,10 +655,8 @@ function Syncest:pushBookConfigAsync(notify)
     }, notify)
     if launched then
         self.last_sync_timestamp = os.time()
-        if self.settings.mirror_to_kosync and self.ui.kosync then
-            pcall(function() self.ui.kosync:updateProgress(true, false) end)
-        end
     end
+    self:_mirrorProgressToKOSync()
 end
 
 function Syncest:pullBookConfigAsync(notify, force_apply)
@@ -798,6 +796,34 @@ function Syncest:_showBooksSyncNotification(text, timeout)
     UIManager:show(notification)
 end
 
+function Syncest:_mirrorProgressToKOSync()
+    if not self.settings.mirror_to_kosync then return false end
+    local kosync = self.ui and self.ui.kosync
+    if not kosync and self.ui then
+        for _, child in ipairs(self.ui) do
+            if type(child) == "table"
+                    and type(child.updateProgress) == "function"
+                    and (child.name == "kosync" or child.title == "KOSync") then
+                kosync = child
+                break
+            end
+        end
+    end
+    if not kosync or type(kosync.updateProgress) ~= "function" then
+        logger.warn("Syncest KOSync mirror: KOSync module not available")
+        return false
+    end
+    local ok, err = pcall(function()
+        kosync:updateProgress(true, false)
+    end)
+    if not ok then
+        logger.warn("Syncest KOSync mirror failed: " .. tostring(err))
+        return false
+    end
+    logger.info("Syncest KOSync mirror: progress push requested")
+    return true
+end
+
 function Syncest:_autoFailureNotify(_label)
     if self._syncest_connection_state == false then return end
     self._syncest_connection_state = false
@@ -825,6 +851,30 @@ function Syncest:_cancelAutoPullTasks()
             UIManager:unschedule(self[name])
             self[name] = nil
         end
+    end
+end
+
+function Syncest:_scheduleStartupGlobalPulls()
+    if not self.settings.auto_sync or WebDavAuth:needsSetup(self.settings) then
+        return
+    end
+    if self.settings.auto_pull_stats ~= false then
+        self._auto_pull_stats_task = function()
+            self._auto_pull_stats_task = nil
+            self:_runSafely("startup pull stats", function()
+                self:pullBookStats(false, true)
+            end)
+        end
+        UIManager:scheduleIn(2, self._auto_pull_stats_task)
+    end
+    if self.settings.auto_pull_vocab ~= false then
+        self._auto_pull_vocab_task = function()
+            self._auto_pull_vocab_task = nil
+            self:_runSafely("startup pull vocab", function()
+                self:pullVocab(false, true)
+            end)
+        end
+        UIManager:scheduleIn(4, self._auto_pull_vocab_task)
     end
 end
 
@@ -882,6 +932,7 @@ function Syncest:init()
     self:onDispatcherRegisterActions()
     self:registerFileDialogButton()
     self:backgroundUpdateCheck()
+    self:_scheduleStartupGlobalPulls()
 end
 
 function Syncest:onDispatcherRegisterActions()
@@ -946,24 +997,6 @@ function Syncest:onReaderReady()
                 end)
             end
             UIManager:scheduleIn(0.75, self._auto_pull_annotations_task)
-        end
-        if self.settings.auto_pull_stats ~= false then
-            self._auto_pull_stats_task = function()
-                self._auto_pull_stats_task = nil
-                self:_runSafely("auto pull stats", function()
-                    self:pullBookStats(false, false)
-                end)
-            end
-            UIManager:scheduleIn(8, self._auto_pull_stats_task)
-        end
-        if self.settings.auto_pull_vocab ~= false then
-            self._auto_pull_vocab_task = function()
-                self._auto_pull_vocab_task = nil
-                self:_runSafely("auto pull vocab", function()
-                    self:pullVocab(false, true)
-                end)
-            end
-            UIManager:scheduleIn(16, self._auto_pull_vocab_task)
         end
     end
     self._last_pushed_page = nil
@@ -1282,7 +1315,7 @@ function Syncest:addToMainMenu(menu_items)
                         end,
                     },
                     {
-                        text = _("Pull stats on book open"),
+                        text = _("Pull stats on app open"),
                         enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
                             return self.settings.auto_pull_stats ~= false
@@ -1306,7 +1339,7 @@ function Syncest:addToMainMenu(menu_items)
                         end,
                     },
                     {
-                        text = _("Pull vocab on book open"),
+                        text = _("Pull vocab on app open"),
                         enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
                             return self.settings.auto_pull_vocab ~= false
@@ -1514,9 +1547,7 @@ function Syncest:pushBookConfig(interactive, notify)
     local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
     self.last_sync_timestamp = SyncConfig:push(
         self.ui, self.settings, client, interactive, self.last_sync_timestamp, notify_fn)
-    if self.settings.mirror_to_kosync and self.ui.kosync then
-        pcall(function() self.ui.kosync:updateProgress(true, false) end)
-    end
+    self:_mirrorProgressToKOSync()
 end
 
 function Syncest:pullBookConfig(interactive, notify)
