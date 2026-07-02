@@ -330,8 +330,8 @@ end
 --   sync/{book_hash}/
 --     progress.json           — {configs: [...]}
 --     annotations.json        — {notes: [...]}
---   stats/
---     data.json               — {statBooks: [...], statPages: [...]}
+--   stats.json                — {statBooks: [...], statPages: [...]}
+--   vocab.json                — {words: [...]}
 --   books/{book_hash}/
 --     {hash}.{ext}            — book file
 --     cover.png
