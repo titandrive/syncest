@@ -62,7 +62,7 @@ books/
     _<Book Title>.json
 ```
 
-The `<book-hash>` folder names are stable machine identifiers. The `_<Book Title>.json` marker files are included to make the folders human-readable and easier for external tools to map back to real books.
+The `<book-hash>` folder names are stable machine identifiers. The `_<Book Title>.json` marker files make the folders human-readable.
 
 ## Synced Data
 
@@ -76,7 +76,9 @@ The `<book-hash>` folder names are stable machine identifiers. The `_<Book Title
 
 `library.json` stores the Syncest book catalog: hashes, titles, authors, formats, reading status, timestamps, and metadata used by the Syncest Library view.
 
-The `_<Book Title>.json` marker files store static book metadata such as title, author/authors, identifiers, format, filename, source title, and metadata payloads. They are intended to be useful for humans and external automation.
+The marker under `sync/<book-hash>/` is intentionally small: it exists as a human breadcrumb beside `progress.json` and `annotations.json`.
+
+The marker under `books/<book-hash>/` is the richer book metadata file for humans and external automation. It stores static book metadata such as title, author/authors, promoted identifiers like ISBN, Google Books ID, Calibre ID, and UUID when available, format, book filename, cover filename, source title, timestamps, and a cleaned KOReader metadata payload.
 
 ## Auto Sync Behavior
 

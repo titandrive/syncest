@@ -27,6 +27,112 @@ local function safe_title_filename(title)
     return "_" .. name .. ".json"
 end
 
+local function normalize_identifier(identifier)
+    identifier = tostring(identifier or "")
+    if identifier:match("urn:") then
+        return identifier:match("([^:]+)$")
+    elseif identifier:match(":") then
+        return identifier:match("^[^:]+:(.+)$")
+    end
+    return identifier
+end
+
+local function identifier_type(raw)
+    local lower = tostring(raw or ""):lower()
+    if lower:find("isbn", 1, true) then return "isbn" end
+    if lower:find("calibre", 1, true) then return "calibre" end
+    if lower:find("uuid", 1, true) then return "uuid" end
+    if lower:find("google", 1, true) then return "google" end
+    local prefix = lower:match("^%s*([^:%s]+):")
+    return prefix or "unknown"
+end
+
+local function split_identifiers(value, out)
+    out = out or {}
+    if type(value) == "table" then
+        for _, v in pairs(value) do split_identifiers(v, out) end
+        return out
+    end
+    if type(value) ~= "string" and type(value) ~= "number" then
+        return out
+    end
+    for raw in tostring(value):gmatch("[^\n]+") do
+        raw = raw:gsub("^%s*(.-)%s*$", "%1")
+        if raw ~= "" then
+            out[#out + 1] = {
+                type = identifier_type(raw),
+                value = normalize_identifier(raw),
+                raw = raw,
+            }
+        end
+    end
+    return out
+end
+
+local function extract_isbns(value, out, force_context)
+    out = out or {}
+    local value_type = type(value)
+    if value_type == "table" then
+        for _, v in pairs(value) do extract_isbns(v, out, force_context) end
+        return out
+    end
+    if value_type ~= "string" and value_type ~= "number" then
+        return out
+    end
+
+    local text = tostring(value)
+    local lower = text:lower()
+    local isbn_context = force_context or lower:find("isbn", 1, true) ~= nil
+    for candidate in text:gmatch("[%dXx][%dXx%-%s]*[%dXx]") do
+        local cleaned = candidate:gsub("[^%dXx]", ""):upper()
+        if #cleaned == 10 and isbn_context then
+            out.isbn10 = out.isbn10 or cleaned
+        elseif #cleaned == 13 and (isbn_context or cleaned:match("^97[89]")) then
+            out.isbn13 = out.isbn13 or cleaned
+        end
+    end
+    out.isbn = out.isbn or out.isbn13 or out.isbn10
+    return out
+end
+
+local function promoted_identifiers(all_identifiers)
+    local out = {}
+    for _, item in ipairs(all_identifiers or {}) do
+        if item.type == "google" then
+            out.googleBooksId = out.googleBooksId or item.value
+        elseif item.type == "calibre" then
+            out.calibreId = out.calibreId or item.value
+        elseif item.type == "uuid" then
+            out.uuid = out.uuid or item.value
+        end
+    end
+    return out
+end
+
+local function marker_metadata(metadata)
+    if type(metadata) ~= "table" then return {} end
+    local copied = {}
+    local skip = {
+        identifiers = true,
+        isbn = true,
+        ISBN = true,
+        isbn10 = true,
+        isbn13 = true,
+        google = true,
+        googleBooksId = true,
+        google_books_id = true,
+        calibre = true,
+        calibreId = true,
+        calibre_id = true,
+        uuid = true,
+        UUID = true,
+    }
+    for k, v in pairs(metadata) do
+        if not skip[k] then copied[k] = v end
+    end
+    return copied
+end
+
 local function write_temp_json(data)
     local json = require("json")
     local DataStorage = require("datastorage")
@@ -106,6 +212,66 @@ local function row_to_wire(row)
     return out
 end
 M._row_to_wire = row_to_wire
+
+local function rich_book_marker(book)
+    local wire = row_to_wire(book) or {}
+    local metadata = wire.metadata or {}
+    local all_identifiers = wire.allIdentifiers or split_identifiers({
+        wire.identifiers,
+        metadata.identifiers,
+        metadata.isbn,
+        metadata.ISBN,
+        metadata.isbn10,
+        metadata.isbn13,
+    })
+    local ids = promoted_identifiers(all_identifiers)
+    ids.googleBooksId = ids.googleBooksId
+        or metadata.googleBooksId or metadata.google_books_id or metadata.google
+    ids.calibreId = ids.calibreId
+        or metadata.calibreId or metadata.calibre_id or metadata.calibre
+    ids.uuid = ids.uuid or metadata.uuid or metadata.UUID
+    local isbns = extract_isbns({
+        all_identifiers,
+        metadata.identifiers,
+    })
+    extract_isbns(wire.isbn, isbns, true)
+    extract_isbns(wire.isbn10, isbns, true)
+    extract_isbns(wire.isbn13, isbns, true)
+    extract_isbns(metadata.isbn, isbns, true)
+    extract_isbns(metadata.ISBN, isbns, true)
+    extract_isbns(metadata.isbn10, isbns, true)
+    extract_isbns(metadata.isbn13, isbns, true)
+    ids.isbn = isbns.isbn
+
+    local ext = EXTS[book.format]
+    local authors = {}
+    if book.author and book.author ~= "" then
+        for author in tostring(book.author):gmatch("[^\n]+") do
+            authors[#authors + 1] = author:gsub("^%s*(.-)%s*$", "%1")
+        end
+    end
+
+    return {
+        bookHash = book.hash,
+        title = book.title or book.source_title or "",
+        author = book.author,
+        authors = authors,
+        isbn = ids.isbn,
+        googleBooksId = ids.googleBooksId,
+        calibreId = ids.calibreId,
+        uuid = ids.uuid,
+        format = book.format,
+        fileName = book.file_path and book.file_path:match("([^/]+)$") or nil,
+        sourceTitle = book.source_title,
+        bookFile = ext and string.format("%s.%s", book.hash, ext) or nil,
+        coverFile = "cover.png",
+        metadata = marker_metadata(metadata),
+        createdAt = wire.createdAt,
+        bookUpdatedAt = wire.updatedAt,
+        uploadedAt = wire.uploadedAt,
+        updatedAt = os.time() * 1000,
+    }
+end
 
 -- ---------------------------------------------------------------------------
 -- WebDAV helpers
@@ -472,7 +638,7 @@ function M.uploadBook(book, opts, cb)
     -- Ensure books/{hash}/ folder exists
     local book_dir = string.format("books/%s", book.hash)
     local books_ok = ensure_folder(api, url("books"), user, pass)
-    local book_ok, book_created = ensure_folder(api, url(book_dir), user, pass)
+    local book_ok = ensure_folder(api, url(book_dir), user, pass)
     if not books_ok or not book_ok then
         if cb then cb(false, "could not create cloud folder") end
         return false, "could not create cloud folder"
@@ -489,21 +655,14 @@ function M.uploadBook(book, opts, cb)
         return false, err or "book upload failed", code
     end
 
-    if book_created then
-        local marker = write_temp_json({
-            bookHash = book.hash,
-            title = book.title or book.source_title or "",
-            authors = book.author and { book.author } or {},
-            updatedAt = os.time() * 1000,
-        })
-        if marker then
-            local marker_rel = string.format("books/%s/%s", book.hash,
-                safe_title_filename(book.title or book.source_title))
-            safe_webdav_call("uploadBookMarker " .. marker_rel, function()
-                return api:uploadFile(url(marker_rel), user, pass, marker)
-            end)
-            os.remove(marker)
-        end
+    local marker = write_temp_json(rich_book_marker(book))
+    if marker then
+        local marker_rel = string.format("books/%s/%s", book.hash,
+            safe_title_filename(book.title or book.source_title))
+        safe_webdav_call("uploadBookMarker " .. marker_rel, function()
+            return api:uploadFile(url(marker_rel), user, pass, marker)
+        end)
+        os.remove(marker)
     end
 
     -- Upload cover (best-effort)

@@ -171,12 +171,6 @@ function WebDavSyncClient:_writeBookMarker(folder, book)
         title = title or "",
         author = meta.author or book.author,
         authors = normalize_authors(meta.authors or book.authors or book.author),
-        identifiers = meta.identifiers,
-        format = meta.format,
-        fileName = meta.fileName,
-        sourceTitle = meta.sourceTitle,
-        metaHashSource = meta.hash_source or book.metaHashSource,
-        metadata = meta.metadata,
         updatedAt = os.time() * 1000,
     }
     return self:_writeJSON(folder .. "/" .. safe_title_filename(title), marker)

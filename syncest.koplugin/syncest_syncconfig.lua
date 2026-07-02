@@ -15,6 +15,32 @@ local function normalizeIdentifier(identifier)
     return identifier
 end
 
+local function extractISBNs(value, out, force_context)
+    out = out or {}
+    local value_type = type(value)
+    if value_type == "table" then
+        for _, v in pairs(value) do extractISBNs(v, out, force_context) end
+        return out
+    end
+    if value_type ~= "string" and value_type ~= "number" then
+        return out
+    end
+
+    local text = tostring(value)
+    local lower = text:lower()
+    local isbn_context = force_context or lower:find("isbn", 1, true) ~= nil
+    for candidate in text:gmatch("[%dXx][%dXx%-%s]*[%dXx]") do
+        local cleaned = candidate:gsub("[^%dXx]", ""):upper()
+        if #cleaned == 10 and isbn_context then
+            out.isbn10 = out.isbn10 or cleaned
+        elseif #cleaned == 13 and (isbn_context or cleaned:match("^97[89]")) then
+            out.isbn13 = out.isbn13 or cleaned
+        end
+    end
+    out.isbn = out.isbn or out.isbn13 or out.isbn10
+    return out
+end
+
 local function normalizeAuthor(author)
     author = author:gsub("^%s*(.-)%s*$", "%1")
     return author
@@ -86,12 +112,18 @@ function SyncConfig:getMetadataHashInfo(ui)
         identifiers_list = { normalizeIdentifier(identifiers_raw) }
     end
 
+    local isbns = extractISBNs({ identifiers_raw, identifiers_list })
+    extractISBNs(doc_props.isbn, isbns, true)
+    extractISBNs(doc_props.ISBN, isbns, true)
+    extractISBNs(doc_props.isbn10, isbns, true)
+    extractISBNs(doc_props.isbn13, isbns, true)
     local hash_source = title .. "|" .. table.concat(authors_list, ",") .. "|" .. table.concat(identifiers_list, ",")
     return {
         title = title,
         author = table.concat(authors_list, "\n"),
         authors = authors_list,
         identifiers = identifiers_list,
+        isbn = isbns.isbn,
         format = suffix and suffix:upper() or nil,
         fileName = filename,
         sourceTitle = basename,

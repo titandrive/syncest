@@ -19,6 +19,13 @@ local logger = require("logger")
 
 local M = {}
 
+local function encode_metadata(metadata)
+    local ok_json, json = pcall(require, "json")
+    if not ok_json or type(metadata) ~= "table" then return nil end
+    local ok, encoded = pcall(json.encode, metadata)
+    return ok and encoded or nil
+end
+
 -- ---------------------------------------------------------------------------
 -- sidecar_to_book_path
 -- ---------------------------------------------------------------------------
@@ -63,6 +70,7 @@ function M.parse_sidecar(path)
         hash      = hash,
         title     = doc_props.title,
         author    = doc_props.authors,
+        metadata_json = encode_metadata(doc_props),
         file_path = book_path,
     }
 end
@@ -156,6 +164,7 @@ function M.lightScan(opts)
                                        or file,
                     author       = doc_props.authors,
                     format       = (file:match("%.([^.]+)$") or ""):upper(),
+                    metadata_json = encode_metadata(doc_props),
                     file_path    = file,
                     local_present = 1,
                     last_read_at = item.time and (item.time * 1000) or nil,
@@ -225,6 +234,7 @@ function M.dirScan(opts)
                                                         or entry,
                                     author        = doc_props.authors,
                                     format        = ext:upper(),
+                                    metadata_json = encode_metadata(doc_props),
                                     file_path     = full,
                                     local_present = 1,
                                     updated_at    = now_ms,
@@ -319,6 +329,7 @@ function M.fullSidecarWalk(opts, on_progress)
                 hash          = p.hash,
                 title         = p.title or p.file_path:match("([^/]+)%.[^.]+$") or "Untitled",
                 author        = p.author,
+                metadata_json = p.metadata_json,
                 file_path     = p.file_path,
                 local_present = 1,
             })
