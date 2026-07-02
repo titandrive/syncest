@@ -481,6 +481,31 @@ function WebDavSyncClient:_mergeNotes(existing, incoming)
     return result
 end
 
+function WebDavSyncClient:_addMissingBookmarkTombstones(existing, incoming, current_ids, book_hash)
+    if type(current_ids) ~= "table" then return incoming end
+    local present_ids = {}
+    for id in pairs(current_ids) do present_ids[id] = true end
+    for _, n in ipairs(incoming or {}) do
+        if n.id and n.type == "bookmark" and not n.deletedAt and not n.deleted_at then
+            present_ids[n.id] = true
+        end
+    end
+    local now = now_ms()
+    for _, n in ipairs(existing or {}) do
+        if n.id and n.type == "bookmark"
+                and not n.deletedAt and not n.deleted_at
+                and not present_ids[n.id] then
+            local tombstone = {}
+            for k, v in pairs(n) do tombstone[k] = v end
+            tombstone.bookHash = tombstone.bookHash or book_hash
+            tombstone.deletedAt = now
+            tombstone.updatedAt = now
+            incoming[#incoming + 1] = tombstone
+        end
+    end
+    return incoming
+end
+
 -- Union-merge book library rows by hash; newer updatedAt wins.
 function WebDavSyncClient:_mergeBooks(existing, incoming)
     local by_hash = {}
@@ -664,8 +689,10 @@ function WebDavSyncClient:pushChanges(changes, callback)
     end
 
     -- Annotations — union merge with remote
-    if changes.notes and #changes.notes > 0 then
-        local book_hash = changes.notes[1].bookHash
+    if (changes.notes and #changes.notes > 0)
+            or (changes.currentBookmarkIds and changes.bookHash) then
+        local book_hash = changes.bookHash
+            or (changes.notes and changes.notes[1] and changes.notes[1].bookHash)
         if book_hash then
             local ann_path = "sync/" .. book_hash .. "/annotations.json"
             local remote, read_status = self:_readJSON(ann_path)
@@ -676,13 +703,21 @@ function WebDavSyncClient:pushChanges(changes, callback)
             else
                 remote = remote or {notes = {}}
                 local notes = strip_note_marker_metadata(changes.notes)
+                if changes.currentBookmarkIds then
+                    notes = self:_addMissingBookmarkTombstones(
+                        remote.notes or {}, notes, changes.currentBookmarkIds, book_hash)
+                end
                 local merged = self:_mergeNotes(remote.notes or {}, notes)
                 if self:_writeJSON(ann_path, {notes = merged}) then
-                    self:_ensureBookMarker("sync/" .. book_hash, changes.notes[1])
+                    if changes.notes and changes.notes[1] then
+                        self:_ensureBookMarker("sync/" .. book_hash, changes.notes[1])
+                    end
                 else
                     logger.warn("WebDavSyncClient pushChanges: annotations write failed, repairing folders")
                     if self:_ensureFolder("sync") and self:_ensureFolder("sync/" .. book_hash) then
-                        self:_writeBookMarker("sync/" .. book_hash, changes.notes[1])
+                        if changes.notes and changes.notes[1] then
+                            self:_writeBookMarker("sync/" .. book_hash, changes.notes[1])
+                        end
                         if not self:_writeJSON(ann_path, {notes = merged}) then
                             ok = false
                         end

@@ -139,6 +139,39 @@ function SyncAnnotations:getAnnotations(ui, settings, book_hash, full_sync)
     return notes
 end
 
+function SyncAnnotations:getCurrentBookmarkIds(ui, book_hash)
+    local annotations = ui.annotation and ui.annotation.annotations
+    local ids = {}
+    if not annotations then return ids end
+
+    for _, item in ipairs(annotations) do
+        local note = self:buildNoteDescriptor(item, book_hash)
+        if note and note.type == "bookmark" and note.id then
+            ids[note.id] = true
+        end
+    end
+    return ids
+end
+
+function SyncAnnotations:addCurrentBookmarks(notes, ui, book_hash)
+    notes = notes or {}
+    local annotations = ui.annotation and ui.annotation.annotations
+    if not annotations then return notes end
+
+    local seen = {}
+    for _, note in ipairs(notes) do
+        if note.id then seen[note.id] = true end
+    end
+    for _, item in ipairs(annotations) do
+        local note = self:buildNoteDescriptor(item, book_hash)
+        if note and note.type == "bookmark" and note.id and not seen[note.id] then
+            notes[#notes + 1] = note
+            seen[note.id] = true
+        end
+    end
+    return notes
+end
+
 -- Drop local annotations the server has tombstoned (deleted_at set), so a
 -- highlight deleted on Readest also disappears in KOReader. Without this,
 -- pull only skips deleted notes — the local copy lingers and any later
@@ -252,8 +285,13 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
         t.bookHash = book_hash
         annotations[#annotations + 1] = t
     end
+    annotations = self:addCurrentBookmarks(annotations, ui, book_hash)
 
-    if #annotations == 0 then return end
+    local current_bookmark_ids
+    if doc_readest_sync.last_synced_at_notes then
+        current_bookmark_ids = self:getCurrentBookmarkIds(ui, book_hash)
+    end
+    if #annotations == 0 and not current_bookmark_ids then return end
     for _, t in ipairs(annotations) do
         t.bookMetadata = meta
     end
@@ -262,6 +300,8 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
         books = {},
         notes = annotations,
         configs = {},
+        bookHash = book_hash,
+        currentBookmarkIds = current_bookmark_ids,
     }
     logger.dbg("ReadestSync: Pushing annotations, payload:", payload)
 

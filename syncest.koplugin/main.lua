@@ -1662,11 +1662,18 @@ function Syncest:pushBookNotes(interactive, full_sync, notify)
         local annotations =
             SyncAnnotations:getAnnotations(self.ui, self.settings, book_hash, full_sync)
         local doc_readest_sync = self.ui.doc_settings:readSetting("webdav_sync") or {}
+        local current_bookmark_ids
+        if doc_readest_sync.last_synced_at_notes then
+            current_bookmark_ids =
+                SyncAnnotations:getCurrentBookmarkIds(self.ui, book_hash)
+        end
         for _, t in ipairs(doc_readest_sync.deleted_notes or {}) do
             t.bookHash = book_hash
             annotations[#annotations + 1] = t
         end
-        if #annotations == 0 then return end
+        annotations = SyncAnnotations:addCurrentBookmarks(
+            annotations, self.ui, book_hash)
+        if #annotations == 0 and not current_bookmark_ids then return end
         for _, t in ipairs(annotations) do
             t.bookMetadata = meta
         end
@@ -1674,6 +1681,8 @@ function Syncest:pushBookNotes(interactive, full_sync, notify)
             books = {},
             notes = annotations,
             configs = {},
+            bookHash = book_hash,
+            currentBookmarkIds = current_bookmark_ids,
         }, notify)
         return
     end
