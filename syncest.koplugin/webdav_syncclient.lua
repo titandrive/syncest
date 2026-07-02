@@ -4,6 +4,7 @@ local json = require("json")
 local logger = require("logger")
 local http = require("socket.http")
 local ok_socket, socket = pcall(require, "socket")
+local EXTS = require("syncest_lib.exts")
 
 -- LuaSocket reads http.TIMEOUT on every new TCP connection, so this caps
 -- the OS-level TCP connect + transfer time and prevents ANR crashes when
@@ -31,6 +32,112 @@ local function normalize_authors(authors)
         return out
     end
     return {}
+end
+
+local function normalize_identifier(identifier)
+    identifier = tostring(identifier or "")
+    if identifier:match("urn:") then
+        return identifier:match("([^:]+)$")
+    elseif identifier:match(":") then
+        return identifier:match("^[^:]+:(.+)$")
+    end
+    return identifier
+end
+
+local function identifier_type(raw)
+    local lower = tostring(raw or ""):lower()
+    if lower:find("isbn", 1, true) then return "isbn" end
+    if lower:find("calibre", 1, true) then return "calibre" end
+    if lower:find("uuid", 1, true) then return "uuid" end
+    if lower:find("google", 1, true) then return "google" end
+    local prefix = lower:match("^%s*([^:%s]+):")
+    return prefix or "unknown"
+end
+
+local function split_identifiers(value, out)
+    out = out or {}
+    if type(value) == "table" then
+        for _, v in pairs(value) do split_identifiers(v, out) end
+        return out
+    end
+    if type(value) ~= "string" and type(value) ~= "number" then
+        return out
+    end
+    for raw in tostring(value):gmatch("[^\n]+") do
+        raw = raw:gsub("^%s*(.-)%s*$", "%1")
+        if raw ~= "" then
+            out[#out + 1] = {
+                type = identifier_type(raw),
+                value = normalize_identifier(raw),
+                raw = raw,
+            }
+        end
+    end
+    return out
+end
+
+local function extract_isbns(value, out, force_context)
+    out = out or {}
+    local value_type = type(value)
+    if value_type == "table" then
+        for _, v in pairs(value) do extract_isbns(v, out, force_context) end
+        return out
+    end
+    if value_type ~= "string" and value_type ~= "number" then
+        return out
+    end
+
+    local text = tostring(value)
+    local lower = text:lower()
+    local isbn_context = force_context or lower:find("isbn", 1, true) ~= nil
+    for candidate in text:gmatch("[%dXx][%dXx%-%s]*[%dXx]") do
+        local cleaned = candidate:gsub("[^%dXx]", ""):upper()
+        if #cleaned == 10 and isbn_context then
+            out.isbn10 = out.isbn10 or cleaned
+        elseif #cleaned == 13 and (isbn_context or cleaned:match("^97[89]")) then
+            out.isbn13 = out.isbn13 or cleaned
+        end
+    end
+    out.isbn = out.isbn or out.isbn13 or out.isbn10
+    return out
+end
+
+local function promoted_identifiers(all_identifiers)
+    local out = {}
+    for _, item in ipairs(all_identifiers or {}) do
+        if item.type == "google" then
+            out.googleBooksId = out.googleBooksId or item.value
+        elseif item.type == "calibre" then
+            out.calibreId = out.calibreId or item.value
+        elseif item.type == "uuid" then
+            out.uuid = out.uuid or item.value
+        end
+    end
+    return out
+end
+
+local function marker_metadata(metadata)
+    if type(metadata) ~= "table" then return {} end
+    local copied = {}
+    local skip = {
+        identifiers = true,
+        isbn = true,
+        ISBN = true,
+        isbn10 = true,
+        isbn13 = true,
+        google = true,
+        googleBooksId = true,
+        google_books_id = true,
+        calibre = true,
+        calibreId = true,
+        calibre_id = true,
+        uuid = true,
+        UUID = true,
+    }
+    for k, v in pairs(metadata) do
+        if not skip[k] then copied[k] = v end
+    end
+    return copied
 end
 
 local function safe_title_filename(title)
@@ -166,11 +273,53 @@ function WebDavSyncClient:_writeBookMarker(folder, book)
     if not hash then return true end
     local meta = book.bookMetadata or book.metadata or {}
     local title = meta.title or book.title or book.sourceTitle or book.source_title
+    local metadata = meta.metadata or {}
+    local all_identifiers = meta.allIdentifiers or split_identifiers({
+        meta.identifiers,
+        metadata.identifiers,
+        metadata.isbn,
+        metadata.ISBN,
+        metadata.isbn10,
+        metadata.isbn13,
+    })
+    local ids = promoted_identifiers(all_identifiers)
+    ids.googleBooksId = ids.googleBooksId
+        or metadata.googleBooksId or metadata.google_books_id or metadata.google
+        or meta.googleBooksId or meta.google_books_id or meta.google
+    ids.calibreId = ids.calibreId
+        or metadata.calibreId or metadata.calibre_id or metadata.calibre
+        or meta.calibreId or meta.calibre_id or meta.calibre
+    ids.uuid = ids.uuid or metadata.uuid or metadata.UUID or meta.uuid or meta.UUID
+    local isbns = extract_isbns({
+        all_identifiers,
+        metadata.identifiers,
+        meta.identifiers,
+    })
+    extract_isbns(meta.isbn, isbns, true)
+    extract_isbns(metadata.isbn, isbns, true)
+    extract_isbns(metadata.ISBN, isbns, true)
+    extract_isbns(metadata.isbn10, isbns, true)
+    extract_isbns(metadata.isbn13, isbns, true)
+    ids.isbn = isbns.isbn
+
+    local format = meta.format or book.format
+    local ext = format and EXTS[format]
     local marker = {
         bookHash = hash,
         title = title or "",
         author = meta.author or book.author,
         authors = normalize_authors(meta.authors or book.authors or book.author),
+        isbn = ids.isbn,
+        googleBooksId = ids.googleBooksId,
+        calibreId = ids.calibreId,
+        uuid = ids.uuid,
+        format = format,
+        fileName = meta.fileName or book.fileName,
+        sourceTitle = meta.sourceTitle or book.sourceTitle or book.source_title,
+        bookFile = ext and string.format("%s.%s", hash, ext) or nil,
+        coverFile = "cover.png",
+        metadata = marker_metadata(metadata),
+        bookUpdatedAt = book.updatedAt,
         updatedAt = os.time() * 1000,
     }
     return self:_writeJSON(folder .. "/" .. safe_title_filename(title), marker)
