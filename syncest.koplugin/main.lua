@@ -383,7 +383,10 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
         end
         if notify then self:_autoNotify("progress", "pulled", 0) end
     end
-    UIManager:scheduleIn(AUTO_SYNC_POLL_INTERVAL, poll)
+    -- Progress pulls happen at book-open time, where even small scheduling
+    -- delays are noticeable. Check once on the next UI tick, then fall back to
+    -- the normal polling cadence if the WebDAV child is still running.
+    UIManager:scheduleIn(0, poll)
     return true
 end
 
@@ -982,7 +985,7 @@ function Syncest:onReaderReady()
             self._auto_pull_progress_task = function()
                 self._auto_pull_progress_task = nil
                 self:_runSafely("auto pull progress", function()
-                    self:pullBookConfig(false, true)
+                    self:pullBookConfig(false, true, true)
                 end)
             end
             UIManager:scheduleIn(0, self._auto_pull_progress_task)
@@ -1550,17 +1553,18 @@ function Syncest:pushBookConfig(interactive, notify)
     self:_mirrorProgressToKOSync()
 end
 
-function Syncest:pullBookConfig(interactive, notify)
+function Syncest:pullBookConfig(interactive, notify, force_apply)
     logger.info("Syncest pullBookConfig: interactive=" .. tostring(interactive)
-        .. " notify=" .. tostring(notify))
+        .. " notify=" .. tostring(notify)
+        .. " force_apply=" .. tostring(force_apply))
     local book_hash = self:getBookIdentifiers()
     if not book_hash then return end
     if NetworkMgr:willRerunWhenOnline(
-            function() self:pullBookConfig(interactive, notify) end) then
+            function() self:pullBookConfig(interactive, notify, force_apply) end) then
         return
     end
     if not interactive then
-        self:pullBookConfigAsync(notify, false)
+        self:pullBookConfigAsync(notify, force_apply == true)
         return
     end
     local client = self:ensureClient(interactive)
@@ -1934,7 +1938,7 @@ function Syncest:onSyncestToggleAutoSync(toggle)
     self.settings.auto_sync = not self.settings.auto_sync
     G_reader_settings:saveSetting("webdav_sync", self.settings)
     if self.settings.auto_sync and self.ui.document then
-        self:pullBookConfig(false)
+        self:pullBookConfig(false, true, true)
     end
 end
 
