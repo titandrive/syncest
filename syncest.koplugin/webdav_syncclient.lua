@@ -344,6 +344,11 @@ function WebDavSyncClient:_writeBookMarker(folder, book)
     if not hash then return true end
     local meta = book.bookMetadata or book.metadata or {}
     local title = meta.title or book.title or book.sourceTitle or book.source_title
+    if not title or title == "" then
+        logger.warn("WebDavSyncClient _writeBookMarker: missing title for "
+            .. tostring(hash))
+        return true
+    end
     local metadata = meta.metadata or {}
     local all_identifiers = meta.allIdentifiers or split_identifiers({
         meta.identifiers,
@@ -400,6 +405,7 @@ function WebDavSyncClient:_ensureBookMarker(folder, book)
     if not folder or type(book) ~= "table" then return true end
     local meta = book.bookMetadata or book.metadata or {}
     local title = meta.title or book.title or book.sourceTitle or book.source_title
+    if not title or title == "" then return true end
     local marker_path = folder .. "/" .. safe_title_filename(title)
     local _existing, read_status = self:_readJSON(marker_path)
     if read_status == READ_MISSING then

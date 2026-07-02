@@ -239,6 +239,7 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
     local book_hash = ui.doc_settings:readSetting("partial_md5_checksum")
     if not book_hash then return end
     local doc_readest_sync = ui.doc_settings:readSetting("webdav_sync") or {}
+    local meta = require("syncest_syncconfig"):getMetadataHashInfo(ui)
 
     local annotations = self:getAnnotations(ui, settings, book_hash, full_sync)
 
@@ -253,6 +254,9 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
     end
 
     if #annotations == 0 then return end
+    for _, t in ipairs(annotations) do
+        t.bookMetadata = meta
+    end
 
     local payload = {
         books = {},
