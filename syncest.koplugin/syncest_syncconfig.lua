@@ -179,10 +179,29 @@ function SyncConfig:applyBookConfig(ui, config, force)
         local page, _total_pages = progress_str:match(progress_pattern)
         local current_page = ui:getCurrentPage()
         local new_page = tonumber(page)
+        if not new_page then
+            return { status = "invalid" }
+        end
         if force or new_page > current_page then
             ui.link:addCurrentLocationToStack()
             ui:handleEvent(Event:new("GotoPage", new_page))
+            return {
+                status = "applied",
+                current = current_page,
+                target = new_page,
+            }
+        elseif new_page < current_page then
+            return {
+                status = "skipped_backward",
+                current = current_page,
+                target = new_page,
+            }
         end
+        return {
+            status = "skipped_same",
+            current = current_page,
+            target = new_page,
+        }
     end
     if not has_pages and xpointer then
         local last_xpointer = ui.rolling:getLastProgress()
@@ -200,8 +219,25 @@ function SyncConfig:applyBookConfig(ui, config, force)
         if force or (cmp_result and cmp_result > 0) then
             ui.link:addCurrentLocationToStack()
             ui:handleEvent(Event:new("GotoXPointer", working_xpointer))
+            return {
+                status = "applied",
+                current = last_xpointer,
+                target = working_xpointer,
+            }
+        elseif cmp_result and cmp_result < 0 then
+            return {
+                status = "skipped_backward",
+                current = last_xpointer,
+                target = working_xpointer,
+            }
         end
+        return {
+            status = "skipped_same",
+            current = last_xpointer,
+            target = working_xpointer,
+        }
     end
+    return { status = "invalid" }
 end
 
 function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp, notify_fn)

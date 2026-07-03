@@ -1,4 +1,5 @@
 local Dispatcher = require("dispatcher")
+local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local Notification = require("ui/widget/notification")
 local KeyValuePage = require("ui/widget/keyvaluepage")
@@ -281,6 +282,30 @@ function Syncest:_backgroundPushProgress(payload, notify)
     return true
 end
 
+function Syncest:_promptBackwardProgress(book_hash, config, apply_result)
+    local message = _("Cloud progress is behind your current location.")
+        .. "\n\n" .. _("Go back to cloud progress?")
+    if type(apply_result) == "table"
+            and type(apply_result.current) == "number"
+            and type(apply_result.target) == "number" then
+        message = T(
+            _("Cloud progress is behind your current location.\n\nCurrent page: %1\nCloud page: %2\n\nGo back to cloud progress?"),
+            tostring(apply_result.current),
+            tostring(apply_result.target))
+    end
+    UIManager:show(ConfirmBox:new{
+        text = message,
+        ok_text = _("Go back"),
+        cancel_text = _("Stay here"),
+        ok_callback = function()
+            if self:getBookIdentifiers() ~= book_hash then
+                return
+            end
+            SyncConfig:applyBookConfig(self.ui, config, true)
+        end,
+    })
+end
+
 function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
     if self._auto_pull_progress_running then
         logger.info("Syncest background progress pull: already running, skipped")
@@ -378,8 +403,15 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
             self.ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
             self.ui.doc_settings:flush()
         end
+        local apply_result
         if result.config then
-            SyncConfig:applyBookConfig(self.ui, result.config, force_apply == true)
+            apply_result = SyncConfig:applyBookConfig(
+                self.ui, result.config, force_apply == true)
+            if not force_apply and apply_result
+                    and apply_result.status == "skipped_backward" then
+                self:_promptBackwardProgress(book_hash, result.config, apply_result)
+                return
+            end
         end
         if notify then self:_autoNotify("progress", "pulled", 0) end
     end
@@ -985,7 +1017,7 @@ function Syncest:onReaderReady()
             self._auto_pull_progress_task = function()
                 self._auto_pull_progress_task = nil
                 self:_runSafely("auto pull progress", function()
-                    self:pullBookConfig(false, true, true)
+                    self:pullBookConfig(false, true, false)
                 end)
             end
             UIManager:scheduleIn(0, self._auto_pull_progress_task)
@@ -1947,7 +1979,7 @@ function Syncest:onSyncestToggleAutoSync(toggle)
     self.settings.auto_sync = not self.settings.auto_sync
     G_reader_settings:saveSetting("webdav_sync", self.settings)
     if self.settings.auto_sync and self.ui.document then
-        self:pullBookConfig(false, true, true)
+        self:pullBookConfig(false, true, false)
     end
 end
 
