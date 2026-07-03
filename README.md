@@ -87,6 +87,10 @@ Book-specific pulls happen when a book opens:
 - Pull reading progress on book open.
 - Pull annotations on book open.
 
+Optional resume pulls can also run when KOReader returns to the foreground with a book already open:
+
+- Pull reading progress on app resume.
+
 Global pulls happen when KOReader/Syncest starts:
 
 - Pull stats on app open.

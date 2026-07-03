@@ -31,6 +31,7 @@ local SYNC_PLUGIN_INERT_DIAGNOSTIC = false
 local AUTO_SYNC_POLL_INTERVAL = 0.25
 local AUTO_SYNC_MAX_POLLS = 80
 local BOOKS_SYNC_MAX_POLLS = 1200
+local RESUME_PROGRESS_PULL_DEBOUNCE = 5
 
 local function write_background_result(path, success, message)
     local file = io.open(path, "w")
@@ -719,6 +720,7 @@ Syncest.default_settings = {
     push_every_x_pages       = true,
     push_page_interval       = 1,
     auto_pull_progress       = true,
+    auto_pull_progress_resume = false,
     auto_push_annotations    = true,
     auto_pull_annotations    = true,
     auto_push_stats          = true,
@@ -1164,12 +1166,32 @@ function Syncest:backgroundUpdateCheck()
     end)
 end
 
+function Syncest:_pullProgressOnResume()
+    if not self.settings.auto_sync
+            or self.settings.auto_pull_progress_resume ~= true
+            or WebDavAuth:needsSetup(self.settings)
+            or not (self.ui and self.ui.document) then
+        return
+    end
+    local now = os.time()
+    if self._last_resume_progress_pull_at
+            and now - self._last_resume_progress_pull_at < RESUME_PROGRESS_PULL_DEBOUNCE then
+        return
+    end
+    self._last_resume_progress_pull_at = now
+    self:_runSafely("resume auto pull progress", function()
+        self:pullBookConfig(false, true, false)
+    end)
+end
+
 function Syncest:onResume()
     self:backgroundUpdateCheck()
+    self:_pullProgressOnResume()
 end
 
 function Syncest:onLeaveStandby()
     self:backgroundUpdateCheck()
+    self:_pullProgressOnResume()
 end
 
 function Syncest:updateMenuItems()
@@ -1310,6 +1332,18 @@ function Syncest:addToMainMenu(menu_items)
                         callback = function()
                             self.settings.auto_pull_progress =
                                 self.settings.auto_pull_progress == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Pull reading progress on app resume"),
+                        enabled_func = function() return self.settings.auto_sync end,
+                        checked_func = function()
+                            return self.settings.auto_pull_progress_resume == true
+                        end,
+                        callback = function()
+                            self.settings.auto_pull_progress_resume =
+                                self.settings.auto_pull_progress_resume ~= true
                             G_reader_settings:saveSetting("webdav_sync", self.settings)
                         end,
                     },
