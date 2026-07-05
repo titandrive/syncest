@@ -29,7 +29,7 @@ local AUTO_PUSH_WEBDAV_ENABLED = true
 local STARTUP_AUTO_PULL_PROGRESS_ENABLED = true
 local SYNC_PLUGIN_INERT_DIAGNOSTIC = false
 local AUTO_SYNC_POLL_INTERVAL = 0.25
-local AUTO_SYNC_MAX_POLLS = 80
+local AUTO_SYNC_MAX_POLLS = 260
 local BOOKS_SYNC_MAX_POLLS = 1200
 local RESUME_PROGRESS_PULL_DEBOUNCE = 5
 
@@ -1721,41 +1721,37 @@ function Syncest:pushBookNotes(interactive, full_sync, notify)
             function() self:pushBookNotes(interactive, full_sync) end) then
         return
     end
-    if not interactive then
-        local book_hash = self:getBookIdentifiers()
-        if not book_hash then return end
-        local meta = SyncConfig:getMetadataHashInfo(self.ui)
-        local annotations =
-            SyncAnnotations:getAnnotations(self.ui, self.settings, book_hash, full_sync)
-        local doc_readest_sync = self.ui.doc_settings:readSetting("webdav_sync") or {}
-        local current_bookmark_ids
-        if doc_readest_sync.last_synced_at_notes then
-            current_bookmark_ids =
-                SyncAnnotations:getCurrentBookmarkIds(self.ui, book_hash)
-        end
-        for _, t in ipairs(doc_readest_sync.deleted_notes or {}) do
-            t.bookHash = book_hash
-            annotations[#annotations + 1] = t
-        end
-        annotations = SyncAnnotations:addCurrentBookmarks(
-            annotations, self.ui, book_hash)
-        if #annotations == 0 and not current_bookmark_ids then return end
-        for _, t in ipairs(annotations) do
-            t.bookMetadata = meta
-        end
-        self:_backgroundPushAnnotations({
-            books = {},
-            notes = annotations,
-            configs = {},
-            bookHash = book_hash,
-            currentBookmarkIds = current_bookmark_ids,
-        }, notify)
+    if interactive and not self:ensureClient(interactive) then
         return
     end
-    local client = self:ensureClient(interactive)
-    if not client then return end
-    local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
-    SyncAnnotations:push(self.ui, self.settings, client, interactive, full_sync, notify_fn)
+    local book_hash = self:getBookIdentifiers()
+    if not book_hash then return end
+    local meta = SyncConfig:getMetadataHashInfo(self.ui)
+    local annotations =
+        SyncAnnotations:getAnnotations(self.ui, self.settings, book_hash, full_sync)
+    local doc_readest_sync = self.ui.doc_settings:readSetting("webdav_sync") or {}
+    local current_bookmark_ids
+    if doc_readest_sync.last_synced_at_notes then
+        current_bookmark_ids =
+            SyncAnnotations:getCurrentBookmarkIds(self.ui, book_hash)
+    end
+    for _, t in ipairs(doc_readest_sync.deleted_notes or {}) do
+        t.bookHash = book_hash
+        annotations[#annotations + 1] = t
+    end
+    annotations = SyncAnnotations:addCurrentBookmarks(
+        annotations, self.ui, book_hash)
+    if #annotations == 0 and not current_bookmark_ids then return end
+    for _, t in ipairs(annotations) do
+        t.bookMetadata = meta
+    end
+    self:_backgroundPushAnnotations({
+        books = {},
+        notes = annotations,
+        configs = {},
+        bookHash = book_hash,
+        currentBookmarkIds = current_bookmark_ids,
+    }, notify)
 end
 
 function Syncest:pullBookNotes(interactive, full_sync, notify)
@@ -1767,20 +1763,21 @@ function Syncest:pullBookNotes(interactive, full_sync, notify)
             function() self:pullBookNotes(interactive, full_sync, notify) end) then
         return
     end
-    if not interactive then
-        if self.ui and self.ui.document and self.ui.document.info
-                and self.ui.document.info.has_pages then
-            logger.warn("Syncest pullBookNotes: auto pull skipped for paged document")
-            return
+    if self.ui and self.ui.document and self.ui.document.info
+            and self.ui.document.info.has_pages then
+        logger.warn("Syncest pullBookNotes: pull skipped for paged document")
+        if interactive then
+            UIManager:show(InfoMessage:new{
+                text = _("Annotation sync is not supported for PDF/CBZ documents."),
+                timeout = 3,
+            })
         end
-        self:_backgroundPullAnnotations(book_hash, full_sync, notify)
         return
     end
-    local client = self:ensureClient(interactive)
-    if not client then return end
-    local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
-    SyncAnnotations:pull(self.ui, self.settings, client, book_hash,
-        self.dialog, interactive, full_sync, notify_fn)
+    if interactive and not self:ensureClient(interactive) then
+        return
+    end
+    self:_backgroundPullAnnotations(book_hash, full_sync, notify)
 end
 
 function Syncest:pushAll(interactive)

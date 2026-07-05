@@ -10,7 +10,9 @@ local EXTS = require("syncest_lib.exts")
 -- build_local_filename: where downloaded book bytes land on disk
 -- ---------------------------------------------------------------------------
 local MAX_BODY_LEN = 200
-local SYNC_TIMEOUT = 4
+local SYNC_TIMEOUT = 15
+local SYNC_TOTAL_TIMEOUT = 60
+local REACHABILITY_TIMEOUT = 5
 
 local function now_ms()
     return math.floor(os.time() * 1000)
@@ -344,7 +346,7 @@ local function server_reachable(opts)
     local ok, connected = pcall(function()
         local s = socket.tcp()
         if not s then return false end
-        s:settimeout(1)
+        s:settimeout(REACHABILITY_TIMEOUT)
         local result = s:connect(host, port)
         s:close()
         return result == 1
@@ -363,7 +365,7 @@ local function safe_webdav_call(label, fn)
 
     logger.info("WebDavSync " .. tostring(label) .. ": start timeout=" .. tostring(SYNC_TIMEOUT))
     http.TIMEOUT = SYNC_TIMEOUT
-    if ok_sutil then pcall(function() socketutil:set_timeout(SYNC_TIMEOUT, SYNC_TIMEOUT) end) end
+    if ok_sutil then pcall(function() socketutil:set_timeout(SYNC_TIMEOUT, SYNC_TOTAL_TIMEOUT) end) end
 
     local ok, result = pcall(fn)
 

@@ -3,13 +3,15 @@ local WebDavApi = require("apps/cloudstorage/webdavapi")
 local json = require("json")
 local logger = require("logger")
 local http = require("socket.http")
+local socketutil = require("socketutil")
 local ok_socket, socket = pcall(require, "socket")
 local EXTS = require("syncest_lib.exts")
 
 -- LuaSocket reads http.TIMEOUT on every new TCP connection, so this caps
 -- the OS-level TCP connect + transfer time and prevents ANR crashes when
 -- the WebDAV server is unreachable (e.g. VPN is off).
-local SYNC_TIMEOUT = 4
+local SYNC_TIMEOUT = socketutil.FILE_BLOCK_TIMEOUT or 15
+local SYNC_TOTAL_TIMEOUT = socketutil.FILE_TOTAL_TIMEOUT or 60
 
 local WebDavSyncClient = {}
 
@@ -193,11 +195,17 @@ end
 
 local function withTimeout(label, fn)
     local prev_timeout = http.TIMEOUT
+    local prev_file_block_timeout = socketutil.FILE_BLOCK_TIMEOUT
+    local prev_file_total_timeout = socketutil.FILE_TOTAL_TIMEOUT
     http.TIMEOUT = SYNC_TIMEOUT
+    socketutil.FILE_BLOCK_TIMEOUT = SYNC_TIMEOUT
+    socketutil.FILE_TOTAL_TIMEOUT = SYNC_TOTAL_TIMEOUT
     local started = now_ms()
     logger.info("WebDavSyncClient " .. label .. ": start timeout=" .. tostring(SYNC_TIMEOUT))
     local ok, a, b, c = pcall(fn)
     http.TIMEOUT = prev_timeout
+    socketutil.FILE_BLOCK_TIMEOUT = prev_file_block_timeout
+    socketutil.FILE_TOTAL_TIMEOUT = prev_file_total_timeout
     logger.info("WebDavSyncClient " .. label .. ": done ok="
         .. tostring(ok) .. " result=" .. tostring(a)
         .. " duration_ms=" .. tostring(now_ms() - started))
