@@ -3,6 +3,8 @@ local WebDavApi = require("apps/cloudstorage/webdavapi")
 local json = require("json")
 local logger = require("logger")
 local http = require("socket.http")
+local lfs = require("libs/libkoreader-lfs")
+local ltn12 = require("ltn12")
 local socketutil = require("socketutil")
 local ok_socket, socket = pcall(require, "socket")
 local EXTS = require("syncest_lib.exts")
@@ -10,8 +12,9 @@ local EXTS = require("syncest_lib.exts")
 -- LuaSocket reads http.TIMEOUT on every new TCP connection, so this caps
 -- the OS-level TCP connect + transfer time and prevents ANR crashes when
 -- the WebDAV server is unreachable (e.g. VPN is off).
-local SYNC_TIMEOUT = socketutil.FILE_BLOCK_TIMEOUT or 15
+local SYNC_TIMEOUT = 6
 local SYNC_TOTAL_TIMEOUT = socketutil.FILE_TOTAL_TIMEOUT or 60
+local SYNC_RETRIES = 2
 
 local WebDavSyncClient = {}
 
@@ -201,8 +204,26 @@ local function withTimeout(label, fn)
     socketutil.FILE_BLOCK_TIMEOUT = SYNC_TIMEOUT
     socketutil.FILE_TOTAL_TIMEOUT = SYNC_TOTAL_TIMEOUT
     local started = now_ms()
-    logger.info("WebDavSyncClient " .. label .. ": start timeout=" .. tostring(SYNC_TIMEOUT))
-    local ok, a, b, c = pcall(fn)
+    logger.info("WebDavSyncClient " .. label .. ": start timeout=" .. tostring(SYNC_TIMEOUT)
+        .. " total_timeout=" .. tostring(SYNC_TOTAL_TIMEOUT))
+    local ok, a, b, c
+    for attempt = 1, SYNC_RETRIES + 1 do
+        ok, a, b, c = pcall(fn)
+        local result = tostring(a or "")
+        local transient = not ok
+            or result:find("No address associated with hostname", 1, true)
+            or result:lower():find("temporary failure", 1, true)
+            or result:lower():find("network unreachable", 1, true)
+            or result:lower():find("timeout", 1, true)
+        if not transient or attempt > SYNC_RETRIES then
+            break
+        end
+        logger.warn("WebDavSyncClient " .. label .. ": transient failure attempt="
+            .. tostring(attempt) .. " result=" .. result)
+        if ok_socket and socket and socket.sleep then
+            socket.sleep(attempt * 2)
+        end
+    end
     http.TIMEOUT = prev_timeout
     socketutil.FILE_BLOCK_TIMEOUT = prev_file_block_timeout
     socketutil.FILE_TOTAL_TIMEOUT = prev_file_total_timeout
@@ -210,6 +231,49 @@ local function withTimeout(label, fn)
         .. tostring(ok) .. " result=" .. tostring(a)
         .. " duration_ms=" .. tostring(now_ms() - started))
     return ok, a, b, c
+end
+
+local function download_json_file(file_url, user, pass, local_path)
+    logger.dbg("WebDavSyncClient: downloading JSON:", file_url)
+    local file = io.open(local_path, "w")
+    if not file then return nil, nil end
+    local code, headers, status = socket.skip(1, http.request{
+        url = file_url,
+        method = "GET",
+        sink = ltn12.sink.file(file),
+        user = user,
+        password = pass,
+        headers = {
+            ["Connection"] = "close",
+        },
+    })
+    if code ~= 200 then
+        logger.warn("WebDavSyncClient: JSON download failure:",
+            status or code or "network unreachable")
+    end
+    return code, headers and headers.etag
+end
+
+local function upload_json_file(file_url, user, pass, local_path)
+    logger.dbg("WebDavSyncClient: uploading JSON:", file_url)
+    local file = io.open(local_path, "r")
+    if not file then return nil end
+    local code, _, status = socket.skip(1, http.request{
+        url = file_url,
+        method = "PUT",
+        source = ltn12.source.file(file),
+        user = user,
+        password = pass,
+        headers = {
+            ["Connection"] = "close",
+            ["Content-Length"] = lfs.attributes(local_path, "size"),
+        },
+    })
+    if type(code) ~= "number" or code < 200 or code > 299 then
+        logger.warn("WebDavSyncClient: JSON upload failure:",
+            status or code or "network unreachable")
+    end
+    return code
 end
 
 function WebDavSyncClient:new(o)
@@ -254,7 +318,7 @@ end
 function WebDavSyncClient:_readJSON(rel_path)
     local tmp = tmp_path(rel_path)
     local ok, code = withTimeout("readJSON " .. tostring(rel_path), function()
-        return WebDavApi:downloadFile(
+        return download_json_file(
             self:_url(rel_path), self.username, self.password, tmp)
     end)
     if not ok then
@@ -299,7 +363,7 @@ function WebDavSyncClient:_writeJSON(rel_path, data)
     f:close()
     local full_url = self:_url(rel_path)
     local ok2, code = withTimeout("writeJSON " .. tostring(rel_path), function()
-        return WebDavApi:uploadFile(full_url, self.username, self.password, tmp)
+        return upload_json_file(full_url, self.username, self.password, tmp)
     end)
     os.remove(tmp)
     if not ok2 then
@@ -330,7 +394,7 @@ function WebDavSyncClient:_writePrettyJSON(rel_path, data)
     f:close()
     local full_url = self:_url(rel_path)
     local ok2, code = withTimeout("writePrettyJSON " .. tostring(rel_path), function()
-        return WebDavApi:uploadFile(full_url, self.username, self.password, tmp)
+        return upload_json_file(full_url, self.username, self.password, tmp)
     end)
     os.remove(tmp)
     if not ok2 then
