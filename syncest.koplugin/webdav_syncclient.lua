@@ -12,6 +12,7 @@ local EXTS = require("syncest_lib.exts")
 -- the WebDAV server is unreachable (e.g. VPN is off).
 local SYNC_TIMEOUT = 3
 local PROGRESS_PUSH_TIMEOUT = 2
+local PROGRESS_PULL_TIMEOUT = 2
 local SYNC_TOTAL_TIMEOUT = socketutil.FILE_TOTAL_TIMEOUT or 60
 local SYNC_RETRIES = 2
 
@@ -273,12 +274,12 @@ end
 
 -- ── JSON read/write ────────────────────────────────────────────────
 
-function WebDavSyncClient:_readJSON(rel_path)
+function WebDavSyncClient:_readJSON(rel_path, block_timeout)
     local tmp = tmp_path(rel_path)
     local ok, code = withTimeout("readJSON " .. tostring(rel_path), function()
         return WebDavApi:downloadFile(
             self:_url(rel_path), self.username, self.password, tmp)
-    end)
+    end, block_timeout)
     if not ok then
         logger.warn("WebDavSyncClient _readJSON: network error for " .. rel_path .. ": " .. tostring(code))
         return nil, READ_FAILED
@@ -639,7 +640,8 @@ function WebDavSyncClient:pullChanges(params, callback)
     local since = tonumber(params.since) or 0
 
     if t == "configs" then
-        local data, read_status = self:_readJSON("sync/" .. book .. "/progress.json")
+        local data, read_status = self:_readJSON(
+            "sync/" .. book .. "/progress.json", PROGRESS_PULL_TIMEOUT)
         if read_status == READ_FAILED then
             callback(false, {}, "read_failed")
             return

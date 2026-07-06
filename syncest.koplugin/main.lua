@@ -29,6 +29,7 @@ local AUTO_PUSH_WEBDAV_ENABLED = true
 local STARTUP_AUTO_PULL_PROGRESS_ENABLED = true
 local SYNC_PLUGIN_INERT_DIAGNOSTIC = false
 local AUTO_SYNC_POLL_INTERVAL = 0.25
+local PROGRESS_PULL_POLL_INTERVAL = 0.05
 local AUTO_SYNC_MAX_POLLS = 260
 local BOOKS_SYNC_MAX_POLLS = 1200
 local RESUME_PROGRESS_PULL_DEBOUNCE = 5
@@ -499,7 +500,7 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
         polls = polls + 1
         if not FFIUtil.isSubProcessDone(pid) then
             if polls < AUTO_SYNC_MAX_POLLS then
-                UIManager:scheduleIn(AUTO_SYNC_POLL_INTERVAL, poll)
+                UIManager:scheduleIn(PROGRESS_PULL_POLL_INTERVAL, poll)
                 return
             end
             FFIUtil.terminateSubProcess(pid)
