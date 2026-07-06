@@ -444,6 +444,13 @@ function WebDavSyncClient:_ensureBookMarker(folder, book)
     return read_status ~= READ_FAILED
 end
 
+function WebDavSyncClient:ensureSyncMarker(book)
+    if type(book) ~= "table" then return true end
+    local hash = book.bookHash or book.hash or book.book_hash
+    if not hash then return true end
+    return self:_ensureBookMarker("sync/" .. hash, book)
+end
+
 local function strip_marker_metadata(configs)
     local out = {}
     for i, config in ipairs(configs or {}) do

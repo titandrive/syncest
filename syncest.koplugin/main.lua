@@ -186,6 +186,135 @@ function Syncest:_runBackgroundJSON(label, result_prefix, child_fn, on_complete,
     return true
 end
 
+function Syncest:_isProgressSyncBusy()
+    return self._auto_push_progress_running
+        or self._auto_pull_progress_running
+        or self._pending_auto_push_progress ~= nil
+end
+
+function Syncest:_isAnnotationSyncBusy()
+    local jobs = self._background_jobs or {}
+    return jobs["background annotations push"] ~= nil
+        or jobs["background annotations pull"] ~= nil
+        or self["_deferred_background annotations push"] ~= nil
+        or self["_deferred_background annotations pull"] ~= nil
+end
+
+function Syncest:_isOtherDataSyncBusy()
+    local jobs = self._background_jobs or {}
+    return jobs["background stats push"] ~= nil
+        or jobs["background stats pull"] ~= nil
+        or jobs["background vocab push"] ~= nil
+        or jobs["background vocab pull"] ~= nil
+        or self["_deferred_background stats push"] ~= nil
+        or self["_deferred_background stats pull"] ~= nil
+        or self["_deferred_background vocab push"] ~= nil
+        or self["_deferred_background vocab pull"] ~= nil
+end
+
+function Syncest:_deferUntilProgressIdle(key, fn, delay)
+    if not self:_isProgressSyncBusy() then return false end
+    local task_key = "_deferred_" .. key
+    if self[task_key] then
+        UIManager:unschedule(self[task_key])
+    end
+    logger.info("Syncest " .. key .. ": deferred until progress sync is idle")
+    self[task_key] = function()
+        self[task_key] = nil
+        fn()
+    end
+    UIManager:scheduleIn(delay or 3, self[task_key])
+    return true
+end
+
+function Syncest:_deferUntilProgressAndAnnotationsIdle(key, fn, delay)
+    if not self:_isProgressSyncBusy() and not self:_isAnnotationSyncBusy() then
+        return false
+    end
+    local task_key = "_deferred_" .. key
+    if self[task_key] then
+        UIManager:unschedule(self[task_key])
+    end
+    logger.info("Syncest " .. key .. ": deferred until progress/annotations are idle")
+    self[task_key] = function()
+        self[task_key] = nil
+        fn()
+    end
+    UIManager:scheduleIn(delay or 3, self[task_key])
+    return true
+end
+
+function Syncest:_queueSyncMarker(book)
+    if type(book) ~= "table" then return false end
+    local hash = book.bookHash or book.hash or book.book_hash
+    if not hash then return false end
+    if not self._pending_sync_markers then self._pending_sync_markers = {} end
+    local copied = {}
+    for k, v in pairs(book) do
+        if type(v) == "table" then
+            local nested = {}
+            for nk, nv in pairs(v) do nested[nk] = nv end
+            copied[k] = nested
+        else
+            copied[k] = v
+        end
+    end
+    self._pending_sync_markers[hash] = copied
+    self:_scheduleSyncMarkerEnsure()
+    return true
+end
+
+function Syncest:_scheduleSyncMarkerEnsure(delay)
+    if self._sync_marker_task then return end
+    self._sync_marker_task = function()
+        self._sync_marker_task = nil
+        self:_runSyncMarkerEnsure()
+    end
+    UIManager:scheduleIn(delay or 8, self._sync_marker_task)
+end
+
+function Syncest:_runSyncMarkerEnsure()
+    if not self._pending_sync_markers then return false end
+    if self:_isProgressSyncBusy()
+            or self:_isAnnotationSyncBusy()
+            or self:_isOtherDataSyncBusy() then
+        self:_scheduleSyncMarkerEnsure(5)
+        return false
+    end
+    if self._background_jobs
+            and self._background_jobs["background sync marker ensure"] then
+        self:_scheduleSyncMarkerEnsure(5)
+        return false
+    end
+    local server = self.settings and self.settings.sync_server
+    if type(server) ~= "table" then return false end
+    local hash, book = next(self._pending_sync_markers)
+    if not hash or not book then return false end
+    self._pending_sync_markers[hash] = nil
+
+    return self:_runBackgroundJSON(
+        "background sync marker ensure",
+        "syncest_marker_ensure",
+        function()
+            local Client = require("webdav_syncclient")
+            local client = Client:new{ server = server }
+            local ok = client:ensureSyncMarker(book)
+            return { success = ok == true }
+        end,
+        function()
+            if self._pending_sync_markers and next(self._pending_sync_markers) then
+                self:_scheduleSyncMarkerEnsure(2)
+            end
+        end,
+        function(message)
+            logger.warn("Syncest sync marker ensure failed: " .. tostring(message))
+            if self._pending_sync_markers and next(self._pending_sync_markers) then
+                self:_scheduleSyncMarkerEnsure(10)
+            end
+        end,
+        AUTO_SYNC_MAX_POLLS)
+end
+
 function Syncest:_backgroundPushProgress(payload, notify)
     if self._auto_push_progress_running then
         logger.info("Syncest background progress push: already running, queued")
@@ -260,6 +389,9 @@ function Syncest:_backgroundPushProgress(payload, notify)
         if success then
             logger.info("Syncest background progress push: success")
             self:_syncConnectionRestored()
+            if payload and payload.configs and payload.configs[1] then
+                self:_queueSyncMarker(payload.configs[1])
+            end
             if self.ui and self.ui.doc_settings then
                 local doc_readest_sync =
                     self.ui.doc_settings:readSetting("webdav_sync") or {}
@@ -426,6 +558,9 @@ end
 function Syncest:_backgroundPushStats(notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
+    if self:_deferUntilProgressAndAnnotationsIdle("background stats push", function()
+            self:_backgroundPushStats(notify)
+        end) then return false end
     local settings = copy_settings(self.settings)
     local failure_fn = notify and function() self:_autoFailureNotify("stats") end or nil
     return self:_runBackgroundJSON("background stats push", "syncest_stats_push", function()
@@ -474,6 +609,9 @@ end
 function Syncest:_backgroundPullStats(notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
+    if self:_deferUntilProgressAndAnnotationsIdle("background stats pull", function()
+            self:_backgroundPullStats(notify)
+        end) then return false end
     local settings = copy_settings(self.settings)
     local failure_fn = notify and function() self:_autoFailureNotify("stats") end or nil
     return self:_runBackgroundJSON("background stats pull", "syncest_stats_pull", function()
@@ -525,6 +663,9 @@ end
 function Syncest:_backgroundPushVocab(notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
+    if self:_deferUntilProgressAndAnnotationsIdle("background vocab push", function()
+            self:_backgroundPushVocab(notify)
+        end) then return false end
     local failure_fn = notify and function() self:_autoFailureNotify("vocab") end or nil
     return self:_runBackgroundJSON("background vocab push", "syncest_vocab_push", function()
         local Vocab = require("syncest_syncvocab")
@@ -556,6 +697,9 @@ end
 function Syncest:_backgroundPullVocab(notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
+    if self:_deferUntilProgressAndAnnotationsIdle("background vocab pull", function()
+            self:_backgroundPullVocab(notify)
+        end) then return false end
     local failure_fn = notify and function() self:_autoFailureNotify("vocab") end or nil
     return self:_runBackgroundJSON("background vocab pull", "syncest_vocab_pull", function()
         local Vocab = require("syncest_syncvocab")
@@ -591,6 +735,9 @@ end
 function Syncest:_backgroundPushAnnotations(payload, notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
+    if self:_deferUntilProgressIdle("background annotations push", function()
+            self:_backgroundPushAnnotations(payload, notify)
+        end) then return false end
     local failure_fn = notify and function() self:_autoFailureNotify("annotations") end or nil
     return self:_runBackgroundJSON(
         "background annotations push",
@@ -614,6 +761,9 @@ function Syncest:_backgroundPushAnnotations(payload, notify)
             }
         end,
         function(result)
+            if payload and payload.notes and payload.notes[1] then
+                self:_queueSyncMarker(payload.notes[1])
+            end
             self.settings.last_notes_sync_at = result.last_notes_sync_at
             G_reader_settings:saveSetting("webdav_sync", self.settings)
             if self.ui and self.ui.doc_settings then
@@ -631,6 +781,9 @@ end
 function Syncest:_backgroundPullAnnotations(book_hash, full_sync, notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" or not book_hash then return false end
+    if self:_deferUntilProgressIdle("background annotations pull", function()
+            self:_backgroundPullAnnotations(book_hash, full_sync, notify)
+        end) then return false end
     local since = full_sync and 0 or (self.settings.last_notes_sync_at or 0)
     local failure_fn = notify and function() self:_autoFailureNotify("annotations") end or nil
     return self:_runBackgroundJSON(
