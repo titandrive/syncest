@@ -3,8 +3,6 @@ local WebDavApi = require("apps/cloudstorage/webdavapi")
 local json = require("json")
 local logger = require("logger")
 local http = require("socket.http")
-local lfs = require("libs/libkoreader-lfs")
-local ltn12 = require("ltn12")
 local socketutil = require("socketutil")
 local ok_socket, socket = pcall(require, "socket")
 local EXTS = require("syncest_lib.exts")
@@ -12,7 +10,8 @@ local EXTS = require("syncest_lib.exts")
 -- LuaSocket reads http.TIMEOUT on every new TCP connection, so this caps
 -- the OS-level TCP connect + transfer time and prevents ANR crashes when
 -- the WebDAV server is unreachable (e.g. VPN is off).
-local SYNC_TIMEOUT = 6
+local SYNC_TIMEOUT = 3
+local PROGRESS_PUSH_TIMEOUT = 2
 local SYNC_TOTAL_TIMEOUT = socketutil.FILE_TOTAL_TIMEOUT or 60
 local SYNC_RETRIES = 2
 
@@ -196,15 +195,16 @@ local function safe_title_filename(title)
     return "_" .. name .. ".json"
 end
 
-local function withTimeout(label, fn)
+local function withTimeout(label, fn, block_timeout)
+    block_timeout = block_timeout or SYNC_TIMEOUT
     local prev_timeout = http.TIMEOUT
     local prev_file_block_timeout = socketutil.FILE_BLOCK_TIMEOUT
     local prev_file_total_timeout = socketutil.FILE_TOTAL_TIMEOUT
-    http.TIMEOUT = SYNC_TIMEOUT
-    socketutil.FILE_BLOCK_TIMEOUT = SYNC_TIMEOUT
+    http.TIMEOUT = block_timeout
+    socketutil.FILE_BLOCK_TIMEOUT = block_timeout
     socketutil.FILE_TOTAL_TIMEOUT = SYNC_TOTAL_TIMEOUT
     local started = now_ms()
-    logger.info("WebDavSyncClient " .. label .. ": start timeout=" .. tostring(SYNC_TIMEOUT)
+    logger.info("WebDavSyncClient " .. label .. ": start timeout=" .. tostring(block_timeout)
         .. " total_timeout=" .. tostring(SYNC_TOTAL_TIMEOUT))
     local ok, a, b, c
     for attempt = 1, SYNC_RETRIES + 1 do
@@ -215,6 +215,7 @@ local function withTimeout(label, fn)
             or result:lower():find("temporary failure", 1, true)
             or result:lower():find("network unreachable", 1, true)
             or result:lower():find("timeout", 1, true)
+            or result:lower():find("closed", 1, true)
         if not transient or attempt > SYNC_RETRIES then
             break
         end
@@ -231,49 +232,6 @@ local function withTimeout(label, fn)
         .. tostring(ok) .. " result=" .. tostring(a)
         .. " duration_ms=" .. tostring(now_ms() - started))
     return ok, a, b, c
-end
-
-local function download_json_file(file_url, user, pass, local_path)
-    logger.dbg("WebDavSyncClient: downloading JSON:", file_url)
-    local file = io.open(local_path, "w")
-    if not file then return nil, nil end
-    local code, headers, status = socket.skip(1, http.request{
-        url = file_url,
-        method = "GET",
-        sink = ltn12.sink.file(file),
-        user = user,
-        password = pass,
-        headers = {
-            ["Connection"] = "close",
-        },
-    })
-    if code ~= 200 then
-        logger.warn("WebDavSyncClient: JSON download failure:",
-            status or code or "network unreachable")
-    end
-    return code, headers and headers.etag
-end
-
-local function upload_json_file(file_url, user, pass, local_path)
-    logger.dbg("WebDavSyncClient: uploading JSON:", file_url)
-    local file = io.open(local_path, "r")
-    if not file then return nil end
-    local code, _, status = socket.skip(1, http.request{
-        url = file_url,
-        method = "PUT",
-        source = ltn12.source.file(file),
-        user = user,
-        password = pass,
-        headers = {
-            ["Connection"] = "close",
-            ["Content-Length"] = lfs.attributes(local_path, "size"),
-        },
-    })
-    if type(code) ~= "number" or code < 200 or code > 299 then
-        logger.warn("WebDavSyncClient: JSON upload failure:",
-            status or code or "network unreachable")
-    end
-    return code
 end
 
 function WebDavSyncClient:new(o)
@@ -318,7 +276,7 @@ end
 function WebDavSyncClient:_readJSON(rel_path)
     local tmp = tmp_path(rel_path)
     local ok, code = withTimeout("readJSON " .. tostring(rel_path), function()
-        return download_json_file(
+        return WebDavApi:downloadFile(
             self:_url(rel_path), self.username, self.password, tmp)
     end)
     if not ok then
@@ -349,7 +307,7 @@ function WebDavSyncClient:_readJSON(rel_path)
     return parsed
 end
 
-function WebDavSyncClient:_writeJSON(rel_path, data)
+function WebDavSyncClient:_writeJSON(rel_path, data, block_timeout)
     logger.info("WebDavSyncClient writeJSON " .. tostring(rel_path) .. ": encoding")
     local ok, encoded = pcall(json.encode, data)
     if not ok then
@@ -363,8 +321,8 @@ function WebDavSyncClient:_writeJSON(rel_path, data)
     f:close()
     local full_url = self:_url(rel_path)
     local ok2, code = withTimeout("writeJSON " .. tostring(rel_path), function()
-        return upload_json_file(full_url, self.username, self.password, tmp)
-    end)
+        return WebDavApi:uploadFile(full_url, self.username, self.password, tmp)
+    end, block_timeout)
     os.remove(tmp)
     if not ok2 then
         logger.warn("WebDavSyncClient _writeJSON: network error for " .. rel_path .. ": " .. tostring(code))
@@ -394,7 +352,7 @@ function WebDavSyncClient:_writePrettyJSON(rel_path, data)
     f:close()
     local full_url = self:_url(rel_path)
     local ok2, code = withTimeout("writePrettyJSON " .. tostring(rel_path), function()
-        return upload_json_file(full_url, self.username, self.password, tmp)
+        return WebDavApi:uploadFile(full_url, self.username, self.password, tmp)
     end)
     os.remove(tmp)
     if not ok2 then
@@ -744,13 +702,17 @@ function WebDavSyncClient:pushChanges(changes, callback)
         if book_hash then
             local progress_configs = strip_marker_metadata(changes.configs)
             local progress_path = "sync/" .. book_hash .. "/progress.json"
-            if self:_writeJSON(progress_path, {configs = progress_configs}) then
-                self:_ensureBookMarker("sync/" .. book_hash, changes.configs[1])
+            if self:_writeJSON(progress_path,
+                    {configs = progress_configs}, PROGRESS_PUSH_TIMEOUT) then
+                -- Keep the critical progress push path to one PUT. Sync markers
+                -- are human-readable metadata and can be refreshed by library/book
+                -- sync; on slow mobile links the extra marker probe can make a
+                -- successful progress push look like a timeout.
             else
                 logger.warn("WebDavSyncClient pushChanges: progress write failed, repairing folders")
                 if self:_ensureFolder("sync") and self:_ensureFolder("sync/" .. book_hash) then
-                    self:_writeBookMarker("sync/" .. book_hash, changes.configs[1])
-                    if not self:_writeJSON(progress_path, {configs = progress_configs}) then
+                    if not self:_writeJSON(progress_path,
+                            {configs = progress_configs}, PROGRESS_PUSH_TIMEOUT) then
                         ok = false
                     end
                 else
@@ -781,15 +743,10 @@ function WebDavSyncClient:pushChanges(changes, callback)
                 end
                 local merged = self:_mergeNotes(remote.notes or {}, notes)
                 if self:_writeJSON(ann_path, {notes = merged}) then
-                    if changes.notes and changes.notes[1] then
-                        self:_ensureBookMarker("sync/" .. book_hash, changes.notes[1])
-                    end
+                    -- Do not block annotation sync completion on marker metadata.
                 else
                     logger.warn("WebDavSyncClient pushChanges: annotations write failed, repairing folders")
                     if self:_ensureFolder("sync") and self:_ensureFolder("sync/" .. book_hash) then
-                        if changes.notes and changes.notes[1] then
-                            self:_writeBookMarker("sync/" .. book_hash, changes.notes[1])
-                        end
                         if not self:_writeJSON(ann_path, {notes = merged}) then
                             ok = false
                         end

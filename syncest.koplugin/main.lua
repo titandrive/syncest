@@ -902,7 +902,7 @@ function Syncest:_scheduleStartupGlobalPulls()
                 self:pullBookStats(false, true)
             end)
         end
-        UIManager:scheduleIn(2, self._auto_pull_stats_task)
+        UIManager:scheduleIn(12, self._auto_pull_stats_task)
     end
     if self.settings.auto_pull_vocab ~= false then
         self._auto_pull_vocab_task = function()
@@ -911,7 +911,7 @@ function Syncest:_scheduleStartupGlobalPulls()
                 self:pullVocab(false, true)
             end)
         end
-        UIManager:scheduleIn(4, self._auto_pull_vocab_task)
+        UIManager:scheduleIn(18, self._auto_pull_vocab_task)
     end
 end
 
@@ -1033,7 +1033,7 @@ function Syncest:onReaderReady()
                     self:pullBookNotes(false, false, true)
                 end)
             end
-            UIManager:scheduleIn(0.75, self._auto_pull_annotations_task)
+            UIManager:scheduleIn(5, self._auto_pull_annotations_task)
         end
     end
     self._last_pushed_page = nil
