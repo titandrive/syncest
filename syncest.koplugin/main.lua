@@ -988,13 +988,19 @@ function Syncest:_autoNotify(label, action, delay)
     end
     if not self._notify_labels then self._notify_labels = {} end
     self._notify_labels[label] = action
+    if self._notify_batching then
+        if not self._notify_task then
+            self._notify_task = function()
+                self:_flushAutoNotify()
+            end
+            UIManager:scheduleIn(self._notify_batch_flush_delay or delay or 1.5,
+                self._notify_task)
+        end
+        return
+    end
     if self._notify_task then UIManager:unschedule(self._notify_task) end
     self._notify_task = function()
         self:_flushAutoNotify()
-    end
-    if self._notify_batching then
-        UIManager:scheduleIn(self._notify_batch_flush_delay or 1.5, self._notify_task)
-        return
     end
     UIManager:scheduleIn(delay or 0.5, self._notify_task)
 end
