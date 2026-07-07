@@ -66,7 +66,7 @@ The `<book-hash>` folder names are stable machine identifiers. The `_<Book Title
 
 ## Synced Data
 
-`progress.json` stores the current reading location and related dynamic progress fields for a single book.
+`progress.json` stores the current reading location and related dynamic progress fields for a single book. When available, it also carries the book's current `readingStatus` and `readingStatusUpdatedAt` so progress-only sync workflows can see the same status that appears in `library.json`.
 
 `annotations.json` stores notes and highlights for a single book. Deleted annotations are synced as tombstones so another device can remove the same annotation instead of resurrecting it.
 

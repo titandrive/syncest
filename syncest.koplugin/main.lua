@@ -472,6 +472,8 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
                 result.status = status
                 if result.success and response and response.configs then
                     result.config = response.configs[1]
+                    result.readingStatus = response.readingStatus
+                    result.readingStatusUpdatedAt = response.readingStatusUpdatedAt
                 else
                     result.message = tostring(status or "")
                 end
@@ -541,11 +543,14 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
         if result.config then
             apply_result = SyncConfig:applyBookConfig(
                 self.ui, result.config, force_apply == true)
+            self:_applyProgressReadingStatus(book_hash, result)
             if not force_apply and apply_result
                     and apply_result.status == "skipped_backward" then
                 self:_promptBackwardProgress(book_hash, result.config, apply_result)
                 return
             end
+        else
+            self:_applyProgressReadingStatus(book_hash, result)
         end
         if notify then self:_autoNotify("progress", "pulled", 0) end
     end
@@ -838,11 +843,11 @@ function Syncest:pushBookConfigAsync(notify)
     end
     local config = SyncConfig:getCurrentBookConfig(self.ui)
     if not config then return end
-    local launched = self:_backgroundPushProgress({
+    local launched = self:_backgroundPushProgress(self:_addProgressReadingStatus({
         books = {},
         notes = {},
         configs = { config },
-    }, notify)
+    }), notify)
     if launched then
         self.last_sync_timestamp = os.time()
     end
@@ -1768,8 +1773,10 @@ function Syncest:pushBookConfig(interactive, notify)
     local client = self:ensureClient(interactive)
     if not client then return end
     local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
+    local book_hash = self:getBookIdentifiers()
     self.last_sync_timestamp = SyncConfig:push(
-        self.ui, self.settings, client, interactive, self.last_sync_timestamp, notify_fn)
+        self.ui, self.settings, client, interactive, self.last_sync_timestamp,
+        notify_fn, self:_readProgressReadingStatus(book_hash))
     self:_mirrorProgressToKOSync()
 end
 
@@ -1791,7 +1798,8 @@ function Syncest:pullBookConfig(interactive, notify, force_apply)
     if not client then return end
     local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
     SyncConfig:pull(self.ui, self.settings, client, book_hash,
-        interactive, function() end, notify_fn)
+        interactive, function() end, notify_fn,
+        function(response) self:_applyProgressReadingStatus(book_hash, response) end)
 end
 
 -- ── Stats sync ─────────────────────────────────────────────────────
@@ -1979,7 +1987,8 @@ function Syncest:openLibrary()
 end
 
 function Syncest:getLibraryStore()
-    if not self.settings.user_id or self.settings.user_id == "" then return nil end
+    if not self.settings or not self.settings.user_id
+            or self.settings.user_id == "" then return nil end
     local LibraryWidget = require("syncest_lib.librarywidget")
     if LibraryWidget._store and LibraryWidget._current_user == self.settings.user_id then
         return LibraryWidget._store
@@ -1995,6 +2004,110 @@ function Syncest:getLibraryStore()
         db_path = DataStorage:getSettingsDir() .. "/syncest_library.sqlite3",
     })
     return self.library_store
+end
+
+function Syncest:_readProgressReadingStatus(book_hash)
+    if not book_hash or book_hash == "" then return nil end
+    local store = self:getLibraryStore()
+    local row
+    if store then
+        row = store:_getRowRaw(book_hash)
+        if row and row.reading_status ~= nil then
+            local ts = row.reading_status_updated_at or os.time() * 1000
+            if not row.reading_status_updated_at then
+                store:touchBook(book_hash, {
+                    reading_status = row.reading_status,
+                    reading_status_updated_at = ts,
+                })
+            end
+            return {
+                readingStatus = row.reading_status,
+                readingStatusUpdatedAt = ts,
+            }
+        end
+    end
+
+    if not self.ui or not self.ui.doc_settings then return nil end
+    local summary = self.ui.doc_settings:readSetting("summary") or {}
+    local readingstatus = require("syncest_lib.readingstatus")
+    local status = readingstatus.ko_to_readest(summary.status)
+    if not status then return nil end
+    local ts = readingstatus.parse_modified_ms(summary.modified)
+        or os.time() * 1000
+    if store and row then
+        store:touchBook(book_hash, {
+            reading_status = status,
+            reading_status_updated_at = ts,
+        })
+    end
+    return {
+        readingStatus = status,
+        readingStatusUpdatedAt = ts,
+    }
+end
+
+function Syncest:_addProgressReadingStatus(payload, book_hash)
+    if type(payload) ~= "table" then return payload end
+    book_hash = book_hash
+        or (payload.configs and payload.configs[1] and payload.configs[1].bookHash)
+    local status = self:_readProgressReadingStatus(book_hash)
+    if status and status.readingStatus ~= nil then
+        payload.readingStatus = status.readingStatus
+        payload.readingStatusUpdatedAt = status.readingStatusUpdatedAt
+    end
+    return payload
+end
+
+function Syncest:_writeCurrentKOReadingStatus(ko_status)
+    if not self.ui or not self.ui.doc_settings then return end
+    local summary = self.ui.doc_settings:readSetting("summary") or {}
+    summary.status = ko_status
+    summary.modified = os.date("%Y-%m-%d", os.time())
+    self.ui.doc_settings:saveSetting("summary", summary)
+    self.ui.doc_settings:flush()
+end
+
+function Syncest:_applyProgressReadingStatus(book_hash, progress_data)
+    if not book_hash or type(progress_data) ~= "table" then return end
+    local status = progress_data.readingStatus or progress_data.reading_status
+    local ts = tonumber(progress_data.readingStatusUpdatedAt
+        or progress_data.reading_status_updated_at)
+    if status == nil or not ts then return end
+
+    local store = self:getLibraryStore()
+    local row = store and store:_getRowRaw(book_hash)
+    local local_ts = row and tonumber(row.reading_status_updated_at) or nil
+    local remote_is_current = not local_ts or ts >= local_ts
+    if row and remote_is_current then
+        store:touchBook(book_hash, {
+            reading_status = status,
+            reading_status_updated_at = ts,
+        })
+    end
+
+    if not remote_is_current or not self.ui or not self.ui.doc_settings then
+        return
+    end
+    local readingstatus = require("syncest_lib.readingstatus")
+    if not readingstatus.readest_decisive(status) then return end
+    local summary = self.ui.doc_settings:readSetting("summary") or {}
+    local r = readingstatus.reconcile(
+        { reading_status = status, reading_status_updated_at = ts },
+        {
+            status = summary.status,
+            ts = readingstatus.parse_modified_ms(summary.modified)
+                or os.time() * 1000,
+        },
+        os.time() * 1000)
+    if r.write_ko then
+        self:_writeCurrentKOReadingStatus(r.ko_status)
+    end
+    if r.write_store and store and row then
+        store:touchBook(book_hash, {
+            reading_status = r.readest_status,
+            reading_status_updated_at = r.ts,
+        })
+    end
 end
 
 function Syncest:touchOpenBook()

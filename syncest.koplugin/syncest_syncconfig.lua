@@ -240,7 +240,7 @@ function SyncConfig:applyBookConfig(ui, config, force)
     return { status = "invalid" }
 end
 
-function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp, notify_fn)
+function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp, notify_fn, status_payload)
     local config = self:getCurrentBookConfig(ui)
     if not config then return last_sync_timestamp end
 
@@ -249,6 +249,14 @@ function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp,
         notes = {},
         configs = { config },
     }
+    if type(status_payload) == "table" then
+        if status_payload.readingStatus ~= nil then
+            payload.readingStatus = status_payload.readingStatus
+        end
+        if status_payload.readingStatusUpdatedAt ~= nil then
+            payload.readingStatusUpdatedAt = status_payload.readingStatusUpdatedAt
+        end
+    end
 
     client:pushChanges(
         payload,
@@ -269,7 +277,7 @@ function SyncConfig:push(ui, settings, client, interactive, last_sync_timestamp,
     return last_sync_timestamp
 end
 
-function SyncConfig:pull(ui, settings, client, book_hash, interactive, logout_fn, notify_fn)
+function SyncConfig:pull(ui, settings, client, book_hash, interactive, logout_fn, notify_fn, status_callback)
     client:pullChanges(
         {
             since = 0,
@@ -301,6 +309,7 @@ function SyncConfig:pull(ui, settings, client, book_hash, interactive, logout_fn
                     self:applyBookConfig(ui, config, interactive)
                 end
             end
+            if status_callback then status_callback(response) end
         end
     )
 end

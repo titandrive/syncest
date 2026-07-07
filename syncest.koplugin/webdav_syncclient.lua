@@ -623,7 +623,7 @@ end
 -- WebDAV layout under {base_path}/:
 --   library.json              — book catalog (wire-format rows)
 --   sync/{book_hash}/
---     progress.json           — {configs: [...]}
+--     progress.json           — {configs: [...], readingStatus?, readingStatusUpdatedAt?}
 --     annotations.json        — {notes: [...]}
 --   stats.json                — {statBooks: [...], statPages: [...]}
 --   vocab.json                — {words: [...]}
@@ -710,9 +710,16 @@ function WebDavSyncClient:pushChanges(changes, callback)
         local book_hash = changes.configs[1].bookHash
         if book_hash then
             local progress_configs = strip_marker_metadata(changes.configs)
+            local progress_body = {configs = progress_configs}
+            if changes.readingStatus ~= nil then
+                progress_body.readingStatus = changes.readingStatus
+            end
+            if changes.readingStatusUpdatedAt ~= nil then
+                progress_body.readingStatusUpdatedAt = changes.readingStatusUpdatedAt
+            end
             local progress_path = "sync/" .. book_hash .. "/progress.json"
             if self:_writeJSON(progress_path,
-                    {configs = progress_configs}, PROGRESS_PUSH_TIMEOUT) then
+                    progress_body, PROGRESS_PUSH_TIMEOUT) then
                 -- Keep the critical progress push path to one PUT. Sync markers
                 -- are human-readable metadata and can be refreshed by library/book
                 -- sync; on slow mobile links the extra marker probe can make a
@@ -721,7 +728,7 @@ function WebDavSyncClient:pushChanges(changes, callback)
                 logger.warn("WebDavSyncClient pushChanges: progress write failed, repairing folders")
                 if self:_ensureFolder("sync") and self:_ensureFolder("sync/" .. book_hash) then
                     if not self:_writeJSON(progress_path,
-                            {configs = progress_configs}, PROGRESS_PUSH_TIMEOUT) then
+                            progress_body, PROGRESS_PUSH_TIMEOUT) then
                         ok = false
                     end
                 else
