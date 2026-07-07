@@ -4,6 +4,8 @@ Syncest is a KOReader plugin for syncing reading data to a WebDAV folder you con
 
 The WebDAV folder becomes the source of truth, so multiple KOReader devices can push and pull from the same place. It also keeps the synced files readable enough for other tools, such as an Obsidian note generator, to inspect and reuse.
 
+Syncest was made primarily to be used alongside [Obsidian MoonSync](https://github.com/titandrive/Obsidian-MoonSync), an Obsidian plugin for working with the synced reading data. MoonSync is optional: Syncest can also be used standalone as a KOReader-to-WebDAV sync plugin.
+
 ## Features
 
 - Sync reading progress per book.
