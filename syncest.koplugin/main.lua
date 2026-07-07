@@ -30,6 +30,7 @@ local STARTUP_AUTO_PULL_PROGRESS_ENABLED = true
 local SYNC_PLUGIN_INERT_DIAGNOSTIC = false
 local AUTO_SYNC_POLL_INTERVAL = 0.25
 local PROGRESS_PULL_POLL_INTERVAL = 0.05
+local PAGE_TURN_PUSH_DELAY = 5
 local AUTO_SYNC_MAX_POLLS = 260
 local BOOKS_SYNC_MAX_POLLS = 1200
 local RESUME_PROGRESS_PULL_DEBOUNCE = 5
@@ -316,9 +317,51 @@ function Syncest:_runSyncMarkerEnsure()
         AUTO_SYNC_MAX_POLLS)
 end
 
+function Syncest:_progressPayloadSignature(payload)
+    if type(payload) ~= "table"
+            or type(payload.configs) ~= "table"
+            or type(payload.configs[1]) ~= "table" then
+        return nil
+    end
+    local config = payload.configs[1]
+    local progress = type(config.progress) == "table" and config.progress or {}
+    return table.concat({
+        tostring(config.bookHash or ""),
+        tostring(progress[1] or config.currentPage or ""),
+        tostring(progress[2] or config.pageCount or ""),
+        tostring(config.xpointer or ""),
+        tostring(payload.readingStatus or ""),
+        tostring(payload.readingStatusUpdatedAt or ""),
+    }, "|")
+end
+
+function Syncest:_progressPayloadAlreadyPushed(payload)
+    if not self.ui or not self.ui.doc_settings then return false end
+    local signature = self:_progressPayloadSignature(payload)
+    if not signature then return false end
+    local doc_sync = self.ui.doc_settings:readSetting("webdav_sync") or {}
+    return doc_sync.last_pushed_progress_signature == signature
+end
+
+function Syncest:_markProgressPayloadPushed(payload)
+    if not self.ui or not self.ui.doc_settings then return end
+    local signature = self:_progressPayloadSignature(payload)
+    if not signature then return end
+    local doc_sync = self.ui.doc_settings:readSetting("webdav_sync") or {}
+    doc_sync.last_pushed_progress_signature = signature
+    doc_sync.last_pushed_at_config = os.time()
+    self.ui.doc_settings:saveSetting("webdav_sync", doc_sync)
+    self.ui.doc_settings:flush()
+end
+
 function Syncest:_backgroundPushProgress(payload, notify)
+    if self:_progressPayloadAlreadyPushed(payload) then
+        logger.info("Syncest background progress push: unchanged, skipped")
+        if notify then self:_autoNotify("progress", "pushed") end
+        return true
+    end
     if self._auto_push_progress_running then
-        logger.info("Syncest background progress push: already running, queued")
+        logger.info("Syncest background progress push: already running, queued latest")
         self._pending_auto_push_progress = {
             payload = payload,
             notify = notify,
@@ -393,13 +436,7 @@ function Syncest:_backgroundPushProgress(payload, notify)
             if payload and payload.configs and payload.configs[1] then
                 self:_queueSyncMarker(payload.configs[1])
             end
-            if self.ui and self.ui.doc_settings then
-                local doc_readest_sync =
-                    self.ui.doc_settings:readSetting("webdav_sync") or {}
-                doc_readest_sync.last_pushed_at_config = os.time()
-                self.ui.doc_settings:saveSetting("webdav_sync", doc_readest_sync)
-                self.ui.doc_settings:flush()
-            end
+            self:_markProgressPayloadPushed(payload)
             if notify then self:_autoNotify("progress", "pushed") end
         else
             logger.warn("Syncest background progress push: failed "
@@ -2370,7 +2407,7 @@ function Syncest:onPageUpdate(page)
                 self.x_page_push_task = nil
                 self:pushBookConfig(false, false)
             end
-            UIManager:scheduleIn(5, self.x_page_push_task)
+            UIManager:scheduleIn(PAGE_TURN_PUSH_DELAY, self.x_page_push_task)
         end
     end
 end
