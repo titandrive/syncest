@@ -34,6 +34,7 @@ local PAGE_TURN_PUSH_DELAY = 5
 local AUTO_SYNC_MAX_POLLS = 260
 local BOOKS_SYNC_MAX_POLLS = 1200
 local RESUME_PROGRESS_PULL_DEBOUNCE = 5
+local APP_SUSPEND_PUSH_DEBOUNCE = 10
 
 local function write_background_result(path, success, message)
     local file = io.open(path, "w")
@@ -913,13 +914,17 @@ Syncest.default_settings = {
     -- Granular auto sync flags (all default on; only meaningful when auto_sync=true)
     auto_push_progress       = true,
     auto_push_progress_close = true,
+    auto_push_progress_suspend = false,
     push_every_x_pages       = true,
     push_page_interval       = 1,
     auto_pull_progress       = true,
     auto_pull_progress_resume = false,
     auto_push_annotations    = true,
+    auto_push_annotations_close = true,
+    auto_push_annotations_suspend = false,
     auto_pull_annotations    = true,
     auto_push_stats          = true,
+    auto_push_stats_suspend  = false,
     auto_pull_stats          = true,
     auto_sync_catalog        = true,
     check_updates            = true,
@@ -1475,6 +1480,10 @@ function Syncest:addToMainMenu(menu_items)
                         enabled_func = function() return false end,
                     },
                     {
+                        text = _("Progress"),
+                        enabled_func = function() return false end,
+                    },
+                    {
                         text_func = function()
                             local n = self.settings.push_page_interval or 1
                             if n == 1 then
@@ -1526,6 +1535,18 @@ function Syncest:addToMainMenu(menu_items)
                         end,
                     },
                     {
+                        text = _("Push reading progress on app suspend"),
+                        enabled_func = function() return self.settings.auto_sync end,
+                        checked_func = function()
+                            return self.settings.auto_push_progress_suspend == true
+                        end,
+                        callback = function()
+                            self.settings.auto_push_progress_suspend =
+                                self.settings.auto_push_progress_suspend ~= true
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
                         text = _("Pull reading progress on book open"),
                         enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
@@ -1550,6 +1571,11 @@ function Syncest:addToMainMenu(menu_items)
                         end,
                     },
                     {
+                        text = _("Annotations"),
+                        enabled_func = function() return false end,
+                        separator = true,
+                    },
+                    {
                         text = _("Push annotations on change"),
                         enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
@@ -1558,6 +1584,38 @@ function Syncest:addToMainMenu(menu_items)
                         callback = function()
                             self.settings.auto_push_annotations =
                                 self.settings.auto_push_annotations == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Push annotations on book close"),
+                        enabled_func = function() return self.settings.auto_sync end,
+                        checked_func = function()
+                            if self.settings.auto_push_annotations_close == nil then
+                                return self.settings.auto_push_annotations ~= false
+                            end
+                            return self.settings.auto_push_annotations_close ~= false
+                        end,
+                        callback = function()
+                            if self.settings.auto_push_annotations_close == nil then
+                                self.settings.auto_push_annotations_close =
+                                    self.settings.auto_push_annotations == false
+                            else
+                                self.settings.auto_push_annotations_close =
+                                    self.settings.auto_push_annotations_close == false
+                            end
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Push annotations on app suspend"),
+                        enabled_func = function() return self.settings.auto_sync end,
+                        checked_func = function()
+                            return self.settings.auto_push_annotations_suspend == true
+                        end,
+                        callback = function()
+                            self.settings.auto_push_annotations_suspend =
+                                self.settings.auto_push_annotations_suspend ~= true
                             G_reader_settings:saveSetting("webdav_sync", self.settings)
                         end,
                     },
@@ -1574,6 +1632,11 @@ function Syncest:addToMainMenu(menu_items)
                         end,
                     },
                     {
+                        text = _("Stats"),
+                        enabled_func = function() return false end,
+                        separator = true,
+                    },
+                    {
                         text = _("Push stats on book close"),
                         enabled_func = function() return self.settings.auto_sync end,
                         checked_func = function()
@@ -1582,6 +1645,18 @@ function Syncest:addToMainMenu(menu_items)
                         callback = function()
                             self.settings.auto_push_stats =
                                 self.settings.auto_push_stats == false
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Push stats on app suspend"),
+                        enabled_func = function() return self.settings.auto_sync end,
+                        checked_func = function()
+                            return self.settings.auto_push_stats_suspend == true
+                        end,
+                        callback = function()
+                            self.settings.auto_push_stats_suspend =
+                                self.settings.auto_push_stats_suspend ~= true
                             G_reader_settings:saveSetting("webdav_sync", self.settings)
                         end,
                     },
@@ -1596,6 +1671,11 @@ function Syncest:addToMainMenu(menu_items)
                                 self.settings.auto_pull_stats == false
                             G_reader_settings:saveSetting("webdav_sync", self.settings)
                         end,
+                    },
+                    {
+                        text = _("Vocab"),
+                        enabled_func = function() return false end,
+                        separator = true,
                     },
                     {
                         text = _("Push vocab on word lookup"),
@@ -2352,30 +2432,76 @@ function Syncest:onSyncestPullAll()
     self:pullAll(true)
 end
 
-function Syncest:onCloseDocument()
+function Syncest:_pushAutoSyncBundle(reason, options)
+    options = options or {}
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
         if not AUTO_PUSH_WEBDAV_ENABLED then
-            logger.warn("Syncest onCloseDocument: auto-push WebDAV sync skipped")
+            logger.warn("Syncest " .. tostring(reason)
+                .. ": auto-push WebDAV sync skipped")
             return
         end
         pcall(function()
             self:_cancelAutoPullTasks()
             self:_beginAutoNotifyBatch(20, true, "pushed")
-            if self.settings.auto_push_progress_close ~= false then
+            if options.progress then
                 self:pushBookConfigAsync(true)
             end
-            if self.settings.auto_push_stats ~= false then
+            if options.stats then
                 self:pushBookStats(false, true)
             end
-            if self.settings.auto_push_vocab ~= false and self._vocab_dirty then
+            if options.vocab and self._vocab_dirty then
                 self._vocab_dirty = false
                 self:pushVocab(false, true)
             end
-            if self.settings.auto_push_annotations ~= false then
+            if options.annotations then
                 self:pushBookNotes(false, false, true)
             end
         end)
     end
+end
+
+function Syncest:_pushOnAppSuspend(reason)
+    if self.settings.auto_push_progress_suspend ~= true
+            and self.settings.auto_push_annotations_suspend ~= true
+            and self.settings.auto_push_stats_suspend ~= true then
+        return
+    end
+    if not (self.ui and self.ui.document) then return end
+    local now = os.time()
+    if self._last_app_suspend_push_at
+            and now - self._last_app_suspend_push_at < APP_SUSPEND_PUSH_DEBOUNCE then
+        return
+    end
+    self._last_app_suspend_push_at = now
+    self:_pushAutoSyncBundle(reason, {
+        progress = self.settings.auto_push_progress_suspend == true,
+        stats = self.settings.auto_push_stats_suspend == true,
+        vocab = false,
+        annotations = self.settings.auto_push_annotations_suspend == true,
+    })
+end
+
+function Syncest:onCloseDocument()
+    local push_annotations = self.settings.auto_push_annotations_close
+    if push_annotations == nil then
+        push_annotations = self.settings.auto_push_annotations ~= false
+    else
+        push_annotations = push_annotations ~= false
+    end
+    self:_pushAutoSyncBundle("onCloseDocument", {
+        progress = self.settings.auto_push_progress_close ~= false,
+        stats = self.settings.auto_push_stats ~= false,
+        vocab = self.settings.auto_push_vocab ~= false,
+        annotations = push_annotations,
+    })
+end
+
+function Syncest:onSuspend()
+    self:_pushOnAppSuspend("onSuspend")
+end
+
+function Syncest:onPause()
+    self:_pushOnAppSuspend("onPause")
 end
 
 -- Fires when a word is looked up (and potentially added to vocab builder).

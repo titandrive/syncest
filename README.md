@@ -102,8 +102,12 @@ Pushes happen when data changes or when a book closes:
 
 - Push every X page turns.
 - Push reading progress on book close.
+- Optionally push reading progress on app suspend.
 - Push annotations on change.
+- Push annotations on book close.
+- Optionally push annotations on app suspend.
 - Push stats on book close.
+- Optionally push stats on app suspend.
 - Push vocab on word lookup.
 
 ## Manual Sync
