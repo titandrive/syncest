@@ -290,6 +290,9 @@ function SyncAnnotations:push(ui, settings, client, interactive, full_sync, noti
     local current_bookmark_ids
     if doc_readest_sync.last_synced_at_notes then
         current_bookmark_ids = self:getCurrentBookmarkIds(ui, book_hash)
+        if not next(current_bookmark_ids) then
+            current_bookmark_ids = nil
+        end
     end
     if #annotations == 0 and not current_bookmark_ids then return end
     for _, t in ipairs(annotations) do

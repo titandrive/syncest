@@ -6,6 +6,7 @@ local KeyValuePage = require("ui/widget/keyvaluepage")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
+local Device = require("device")
 local logger = require("logger")
 local FFIUtil = require("ffi/util")
 local T = FFIUtil.template
@@ -936,6 +937,17 @@ Syncest.default_settings = {
 
 -- ── Lifecycle ──────────────────────────────────────────────────────
 
+function Syncest:_autoNotifyCompactAt()
+    local Screen = Device and Device.screen
+    local width = Screen and Screen.getWidth and Screen:getWidth() or 0
+    if width > 0 and width < 700 then
+        return 2
+    elseif width >= 1000 then
+        return 4
+    end
+    return 3
+end
+
 function Syncest:_flushAutoNotify()
     if not self._notify_labels then
         self._notify_task = nil
@@ -945,15 +957,50 @@ function Syncest:_flushAutoNotify()
         return
     end
     local order = { "progress", "annotations", "stats", "vocab" }
+    local label_names = {
+        progress = _("progress"),
+        annotations = _("annotations"),
+        stats = _("stats"),
+        vocab = _("vocab"),
+    }
     local parts = {}
+    local actions = {}
+    local shared_action
+    local mixed_actions = false
     for _, k in ipairs(order) do
-        if self._notify_labels[k] then
-            parts[#parts + 1] = k .. " " .. self._notify_labels[k]
+        local action = self._notify_labels[k]
+        if action then
+            parts[#parts + 1] = label_names[k] or k
+            actions[#actions + 1] = action
+            if not shared_action then
+                shared_action = action
+            elseif shared_action ~= action then
+                mixed_actions = true
+            end
         end
     end
     if #parts > 0 then
+        local text
+        local compact_at = self:_autoNotifyCompactAt()
+        if #parts >= compact_at and not mixed_actions and shared_action == "pushed" then
+            text = T(_("Syncest pushed %1 items"), tostring(#parts))
+        elseif #parts >= compact_at and not mixed_actions and shared_action == "pulled" then
+            text = T(_("Syncest pulled %1 items"), tostring(#parts))
+        elseif #parts >= compact_at and not mixed_actions then
+            text = T(_("Syncest synced %1 items"), tostring(#parts))
+        elseif not mixed_actions and shared_action == "pushed" then
+            text = _("Pushed: ") .. table.concat(parts, ", ")
+        elseif not mixed_actions and shared_action == "pulled" then
+            text = _("Pulled: ") .. table.concat(parts, ", ")
+        else
+            local mixed = {}
+            for i, label in ipairs(parts) do
+                mixed[#mixed + 1] = label .. " " .. tostring(actions[i])
+            end
+            text = table.concat(mixed, ", ")
+        end
         UIManager:show(Notification:new{
-            text = table.concat(parts, ", "),
+            text = text,
             timeout = 2,
         })
     end
@@ -2019,6 +2066,9 @@ function Syncest:pushBookNotes(interactive, full_sync, notify)
     if doc_readest_sync.last_synced_at_notes then
         current_bookmark_ids =
             SyncAnnotations:getCurrentBookmarkIds(self.ui, book_hash)
+        if not next(current_bookmark_ids) then
+            current_bookmark_ids = nil
+        end
     end
     for _, t in ipairs(doc_readest_sync.deleted_notes or {}) do
         t.bookHash = book_hash
@@ -2067,6 +2117,7 @@ end
 
 function Syncest:pushAll(interactive)
     self:_runSafely("push all", function()
+        self:_beginAutoNotifyBatch(20, true, "pushed")
         local in_book = self.ui and self.ui.document
         if in_book then
             self:pushBookConfigAsync(true)
@@ -2079,6 +2130,7 @@ end
 
 function Syncest:pullAll(interactive)
     self:_runSafely("pull all", function()
+        self:_beginAutoNotifyBatch(20, true, "pulled")
         local in_book = self.ui and self.ui.document
         if in_book then
             self:pullBookConfigAsync(true, true)
