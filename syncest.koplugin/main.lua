@@ -216,6 +216,40 @@ function Syncest:_isOtherDataSyncBusy()
         or self["_deferred_background vocab pull"] ~= nil
 end
 
+function Syncest:_isAutoSyncBundleBusy()
+    return self:_isProgressSyncBusy()
+        or self:_isAnnotationSyncBusy()
+        or self:_isOtherDataSyncBusy()
+end
+
+function Syncest:_scheduleAutoSyncBundleNotifyFlush()
+    if self._auto_sync_bundle_notify_task then
+        UIManager:unschedule(self._auto_sync_bundle_notify_task)
+    end
+    local started_at = os.time()
+    self._auto_sync_bundle_notify_task = function()
+        if self:_isAutoSyncBundleBusy() then
+            if os.time() - started_at < 20 then
+                UIManager:scheduleIn(AUTO_SYNC_POLL_INTERVAL,
+                    self._auto_sync_bundle_notify_task)
+            else
+                self._auto_sync_bundle_notify_task = nil
+            end
+            return
+        end
+        self._auto_sync_bundle_notify_task = nil
+        if self._notify_task then
+            UIManager:unschedule(self._notify_task)
+        end
+        self._notify_task = function()
+            self:_flushAutoNotify()
+        end
+        UIManager:scheduleIn(AUTO_SYNC_POLL_INTERVAL, self._notify_task)
+    end
+    UIManager:scheduleIn(AUTO_SYNC_POLL_INTERVAL,
+        self._auto_sync_bundle_notify_task)
+end
+
 function Syncest:_deferUntilProgressIdle(key, fn, delay)
     if not self:_isProgressSyncBusy() then return false end
     local task_key = "_deferred_" .. key
@@ -882,15 +916,19 @@ function Syncest:pushBookConfigAsync(notify)
     end
     local config = SyncConfig:getCurrentBookConfig(self.ui)
     if not config then return end
-    local launched = self:_backgroundPushProgress(self:_addProgressReadingStatus({
+    local payload = self:_addProgressReadingStatus({
         books = {},
         notes = {},
         configs = { config },
-    }), notify)
+    })
+    local already_pushed = self:_progressPayloadAlreadyPushed(payload)
+    local launched = self:_backgroundPushProgress(payload, notify)
     if launched then
         self.last_sync_timestamp = os.time()
     end
-    self:_mirrorProgressToKOSync()
+    if launched and not already_pushed then
+        self:_mirrorProgressToKOSync()
+    end
 end
 
 function Syncest:pullBookConfigAsync(notify, force_apply)
@@ -2508,6 +2546,7 @@ function Syncest:_pushAutoSyncBundle(reason, options)
             if options.annotations then
                 self:pushBookNotes(false, false, true)
             end
+            self:_scheduleAutoSyncBundleNotifyFlush()
         end)
     end
 end
