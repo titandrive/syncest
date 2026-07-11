@@ -3069,6 +3069,34 @@ function Syncest:onAnnotationsModified(items)
         end
         return
     end
+    local external_reader_change = external and external.book_path
+        and self.ui.document ~= nil
+    if external_reader_change then
+        local stored_item = {
+            id = external.id,
+            drawer = external.drawer,
+            pos0 = external.pos0,
+            pos1 = external.pos1,
+            text = external.highlighted_text or external.text or "",
+            note = external.user_note or external.note,
+            pageno = external.page,
+            datetime = external.datetime,
+        }
+        local still_present = false
+        for _, item in ipairs(self.ui.annotation
+                and self.ui.annotation.annotations or {}) do
+            if (stored_item.pos0
+                    and tostring(item.pos0) == tostring(stored_item.pos0))
+                    or (item.datetime == stored_item.datetime
+                        and item.text == stored_item.text) then
+                still_present = true
+                break
+            end
+        end
+        if not still_present then
+            SyncAnnotations:recordDeletion(self.ui.doc_settings, stored_item)
+        end
+    end
     if not WebDavAuth:needsSetup(self.settings) and items
             and items.index_modified and items.index_modified < 0 and items[1] then
         SyncAnnotations:recordDeletion(self.ui.doc_settings, items[1])
@@ -3080,7 +3108,7 @@ function Syncest:onAnnotationsModified(items)
         end
         self._annotations_push_task = function()
             self._annotations_push_task = nil
-            self:pushBookNotes(false, false, true)
+            self:pushBookNotes(false, external_reader_change == true, true)
         end
         UIManager:scheduleIn(1, self._annotations_push_task)
     end
