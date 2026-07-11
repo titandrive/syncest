@@ -1626,6 +1626,118 @@ function Syncest:pullFileAnnotations(file, notify)
     return self:_backgroundPullAnnotations(book_hash, true, notify, file)
 end
 
+local function annotation_history_files()
+    local ReadHistory = require("readhistory")
+    local lfs = require("libs/libkoreader-lfs")
+    local files, seen = {}, {}
+    for _, entry in ipairs(ReadHistory.hist or {}) do
+        local file = entry.file
+        if file and not seen[file] and lfs.attributes(file, "mode") == "file" then
+            seen[file] = true
+            files[#files + 1] = file
+        end
+    end
+    return files
+end
+
+function Syncest:pushAllFileAnnotations(notify)
+    if WebDavAuth:needsSetup(self.settings) then return false end
+    local jobs = {}
+    for _, file in ipairs(annotation_history_files()) do
+        local payload = self:_fileAnnotationPayload(file)
+        if payload and #payload.notes > 0 then
+            jobs[#jobs + 1] = { file = file, payload = payload }
+        end
+    end
+    if #jobs == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("No annotations found."), timeout = 2,
+        })
+        return false
+    end
+    local server = self.settings.sync_server
+    return self:_runBackgroundJSON(
+        "background all annotations push", "syncest_all_annotations_push",
+        function()
+            local Client = require("webdav_syncclient")
+            local client = Client:new{ server = server }
+            local pushed = 0
+            for _, job in ipairs(jobs) do
+                local success = false
+                client:pushChanges(job.payload, function(ok) success = ok == true end)
+                if not success then
+                    return { success = false,
+                        message = "annotation push failed for " .. tostring(job.file) }
+                end
+                pushed = pushed + 1
+            end
+            return { success = true, pushed = pushed,
+                last_notes_sync_at = os.time() * 1000 }
+        end,
+        function(result)
+            self.settings.last_notes_sync_at = result.last_notes_sync_at
+            G_reader_settings:saveSetting("webdav_sync", self.settings)
+            for _, job in ipairs(jobs) do
+                local file_ui = open_file_annotation_ui(job.file)
+                if file_ui then
+                    local sync = file_ui.doc_settings:readSetting("webdav_sync") or {}
+                    sync.deleted_notes = nil
+                    sync.last_pushed_at_notes = os.time()
+                    file_ui.doc_settings:saveSetting("webdav_sync", sync)
+                    file_ui.doc_settings:flush()
+                end
+            end
+            if notify then self:_autoNotify("annotations", "pushed") end
+        end,
+        notify and function() self:_autoFailureNotify("annotations") end or nil,
+        BOOKS_SYNC_MAX_POLLS)
+end
+
+function Syncest:pullAllFileAnnotations(notify)
+    if WebDavAuth:needsSetup(self.settings) then return false end
+    local jobs = {}
+    for _, file in ipairs(annotation_history_files()) do
+        local file_ui = open_file_annotation_ui(file)
+        if file_ui then
+            local hash = ensure_file_book_hash(file_ui, file)
+            if hash then jobs[#jobs + 1] = { file = file, book_hash = hash } end
+        end
+    end
+    local server = self.settings.sync_server
+    return self:_runBackgroundJSON(
+        "background all annotations pull", "syncest_all_annotations_pull",
+        function()
+            local Client = require("webdav_syncclient")
+            local client = Client:new{ server = server }
+            local pulled = {}
+            for _, job in ipairs(jobs) do
+                local success, notes = false, nil
+                client:pullChanges({ since = 0, type = "notes", book = job.book_hash },
+                    function(ok, response)
+                        success = ok == true
+                        notes = response and response.notes or {}
+                    end)
+                if not success then
+                    return { success = false,
+                        message = "annotation pull failed for " .. tostring(job.file) }
+                end
+                pulled[#pulled + 1] = {
+                    file = job.file, book_hash = job.book_hash, notes = notes,
+                }
+            end
+            return { success = true, books = pulled }
+        end,
+        function(result)
+            local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
+            for _, book in ipairs(result.books or {}) do
+                self:_applyFileAnnotations(
+                    book.file, book.book_hash, book.notes, notify_fn)
+            end
+        end,
+        notify and function() self:_autoFailureNotify("annotations") end or nil,
+        BOOKS_SYNC_MAX_POLLS)
+end
+
 function Syncest:addToLibrary(file)
     local lfs  = require("libs/libkoreader-lfs")
     local util = require("util")
@@ -2139,6 +2251,23 @@ function Syncest:addToMainMenu(menu_items)
                 text = _("Sync info"),
                 callback = function() self:showSyncInfo() end,
             }
+        else
+            local annotation_items = {
+                {
+                    text = _("Push all annotations now"),
+                    enabled_func = function() return configured end,
+                    callback = function() self:pushAllFileAnnotations(true) end,
+                },
+                {
+                    text = _("Pull all annotations now"),
+                    enabled_func = function() return configured end,
+                    callback = function() self:pullAllFileAnnotations(true) end,
+                    separator = true,
+                },
+            }
+            for i = #annotation_items, 1, -1 do
+                table.insert(items, 5, annotation_items[i])
+            end
         end
 
         return items
