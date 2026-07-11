@@ -811,11 +811,11 @@ function Syncest:_backgroundPullVocab(notify)
     end, failure_fn)
 end
 
-function Syncest:_backgroundPushAnnotations(payload, notify)
+function Syncest:_backgroundPushAnnotations(payload, notify, doc_path)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
     if self:_deferUntilProgressIdle("background annotations push", function()
-            self:_backgroundPushAnnotations(payload, notify)
+            self:_backgroundPushAnnotations(payload, notify, doc_path)
         end) then return false end
     local failure_fn = notify and function() self:_autoFailureNotify("annotations") end or nil
     return self:_runBackgroundJSON(
@@ -845,23 +845,29 @@ function Syncest:_backgroundPushAnnotations(payload, notify)
             end
             self.settings.last_notes_sync_at = result.last_notes_sync_at
             G_reader_settings:saveSetting("webdav_sync", self.settings)
-            if self.ui and self.ui.doc_settings then
-                local synced = self.ui.doc_settings:readSetting("webdav_sync") or {}
+            local doc_settings = self.ui and self.ui.doc_settings
+            if doc_path then
+                local DocSettings = require("docsettings")
+                local ok, opened = pcall(DocSettings.open, DocSettings, doc_path)
+                if ok then doc_settings = opened end
+            end
+            if doc_settings then
+                local synced = doc_settings:readSetting("webdav_sync") or {}
                 synced.last_pushed_at_notes = result.last_pushed_at_notes
                 synced.deleted_notes = nil
-                self.ui.doc_settings:saveSetting("webdav_sync", synced)
-                self.ui.doc_settings:flush()
+                doc_settings:saveSetting("webdav_sync", synced)
+                doc_settings:flush()
             end
             if notify then self:_autoNotify("annotations", "pushed") end
         end,
         failure_fn)
 end
 
-function Syncest:_backgroundPullAnnotations(book_hash, full_sync, notify)
+function Syncest:_backgroundPullAnnotations(book_hash, full_sync, notify, doc_path)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" or not book_hash then return false end
     if self:_deferUntilProgressIdle("background annotations pull", function()
-            self:_backgroundPullAnnotations(book_hash, full_sync, notify)
+            self:_backgroundPullAnnotations(book_hash, full_sync, notify, doc_path)
         end) then return false end
     local since = full_sync and 0 or (self.settings.last_notes_sync_at or 0)
     local failure_fn = notify and function() self:_autoFailureNotify("annotations") end or nil
@@ -892,7 +898,7 @@ function Syncest:_backgroundPullAnnotations(book_hash, full_sync, notify)
             }
         end,
         function(result)
-            if self:getBookIdentifiers() ~= book_hash then
+            if not doc_path and self:getBookIdentifiers() ~= book_hash then
                 logger.warn("Syncest background annotations pull: current book changed, skipping apply")
                 return
             end
@@ -902,8 +908,12 @@ function Syncest:_backgroundPullAnnotations(book_hash, full_sync, notify)
                 return
             end
             local notify_fn = notify and function(l, a) self:_autoNotify(l, a) end or nil
-            SyncAnnotations:applyPulledNotes(
-                self.ui, self.settings, result.notes, book_hash, self.dialog, notify_fn)
+            if doc_path then
+                self:_applyFileAnnotations(doc_path, book_hash, result.notes, notify_fn)
+            else
+                SyncAnnotations:applyPulledNotes(
+                    self.ui, self.settings, result.notes, book_hash, self.dialog, notify_fn)
+            end
         end,
         failure_fn)
 end
@@ -1363,9 +1373,92 @@ function Syncest:registerFileDialogButton()
                         if dlg then UIManager:close(dlg) end
                         plugin:addToLibrary(file)
                     end,
+                }, {
+                    text = _("Push annotations to Syncest"),
+                    enabled = not WebDavAuth:needsSetup(plugin.settings),
+                    callback = function()
+                        plugin:pushFileAnnotations(file, true)
+                    end,
+                }, {
+                    text = _("Pull annotations from Syncest"),
+                    enabled = not WebDavAuth:needsSetup(plugin.settings),
+                    callback = function()
+                        plugin:pullFileAnnotations(file, true)
+                    end,
                 }}
             end)
     end)
+end
+
+local function open_file_annotation_ui(file)
+    local DocSettings = require("docsettings")
+    local ok, doc_settings = pcall(DocSettings.open, DocSettings, file)
+    if not ok or not doc_settings then return nil end
+    local annotations = doc_settings:readSetting("annotations") or {}
+    local annotation = { annotations = annotations }
+    function annotation:addItem(item)
+        self.annotations[#self.annotations + 1] = item
+        return #self.annotations
+    end
+    return {
+        doc_settings = doc_settings,
+        annotation = annotation,
+        document = {
+            info = { has_pages = false },
+            getPageFromXPointer = function(_, _xp) return nil end,
+        },
+        handleEvent = function() end,
+    }
+end
+
+function Syncest:_fileAnnotationPayload(file, deleted_item)
+    local file_ui = open_file_annotation_ui(file)
+    if not file_ui then return nil end
+    local book_hash = SyncConfig:getDocumentIdentifier(file_ui)
+    if not book_hash then return nil end
+    local notes = SyncAnnotations:getAnnotations(
+        file_ui, self.settings, book_hash, true)
+    if deleted_item then
+        local tombstone = SyncAnnotations:buildNoteDescriptor(deleted_item, book_hash)
+        if tombstone then
+            tombstone.deletedAt = os.time() * 1000
+            notes[#notes + 1] = tombstone
+        end
+    end
+    local meta = SyncConfig:getMetadataHashInfo(file_ui)
+    for _, note in ipairs(notes) do note.bookMetadata = meta end
+    return {
+        books = {}, notes = notes, configs = {}, bookHash = book_hash,
+    }, file_ui
+end
+
+function Syncest:pushFileAnnotations(file, notify, deleted_item)
+    if WebDavAuth:needsSetup(self.settings) then return false end
+    local payload = self:_fileAnnotationPayload(file, deleted_item)
+    if not payload or #payload.notes == 0 then return false end
+    return self:_backgroundPushAnnotations(payload, notify, file)
+end
+
+function Syncest:_applyFileAnnotations(file, book_hash, notes, notify_fn)
+    local file_ui = open_file_annotation_ui(file)
+    if not file_ui then return false end
+    local applied = SyncAnnotations:applyPulledNotes(
+        file_ui, self.settings, notes, book_hash, nil, notify_fn)
+    if applied then
+        file_ui.doc_settings:saveSetting(
+            "annotations", file_ui.annotation.annotations)
+        file_ui.doc_settings:flush()
+    end
+    return applied
+end
+
+function Syncest:pullFileAnnotations(file, notify)
+    if WebDavAuth:needsSetup(self.settings) then return false end
+    local file_ui = open_file_annotation_ui(file)
+    if not file_ui then return false end
+    local book_hash = SyncConfig:getDocumentIdentifier(file_ui)
+    if not book_hash then return false end
+    return self:_backgroundPullAnnotations(book_hash, true, notify, file)
 end
 
 function Syncest:addToLibrary(file)
@@ -2636,6 +2729,49 @@ function Syncest:onPageUpdate(page)
 end
 
 function Syncest:onAnnotationsModified(items)
+    local external = items and items[1]
+    if external and external.book_path and not self.ui.document then
+        local stored_item = {
+            id = external.id,
+            drawer = external.drawer,
+            pos0 = external.pos0,
+            pos1 = external.pos1,
+            text = external.highlighted_text or external.text or "",
+            note = external.user_note or external.note,
+            pageno = external.page,
+            datetime = external.datetime,
+        }
+        local file_ui = open_file_annotation_ui(external.book_path)
+        local still_present = false
+        for _, item in ipairs(file_ui and file_ui.annotation.annotations or {}) do
+            if (stored_item.pos0 and tostring(item.pos0) == tostring(stored_item.pos0))
+                    or (item.datetime == stored_item.datetime
+                        and item.text == stored_item.text) then
+                still_present = true
+                break
+            end
+        end
+        if self.settings.auto_sync
+                and self.settings.auto_push_annotations ~= false
+                and not WebDavAuth:needsSetup(self.settings) then
+            self._file_annotations_push_tasks =
+                self._file_annotations_push_tasks or {}
+            local old_task = self._file_annotations_push_tasks[external.book_path]
+            if old_task then
+                UIManager:unschedule(old_task)
+            end
+            local file = external.book_path
+            local deleted_item = not still_present and stored_item or nil
+            local task
+            task = function()
+                self._file_annotations_push_tasks[file] = nil
+                self:pushFileAnnotations(file, true, deleted_item)
+            end
+            self._file_annotations_push_tasks[file] = task
+            UIManager:scheduleIn(1, task)
+        end
+        return
+    end
     if not WebDavAuth:needsSetup(self.settings) and items
             and items.index_modified and items.index_modified < 0 and items[1] then
         SyncAnnotations:recordDeletion(self.ui.doc_settings, items[1])
@@ -2671,6 +2807,10 @@ function Syncest:onCloseWidget()
         UIManager:unschedule(self._annotations_push_task)
         self._annotations_push_task = nil
     end
+    for _, task in pairs(self._file_annotations_push_tasks or {}) do
+        UIManager:unschedule(task)
+    end
+    self._file_annotations_push_tasks = nil
     if self._failure_notify_task then
         UIManager:unschedule(self._failure_notify_task)
         self._failure_notify_task = nil
