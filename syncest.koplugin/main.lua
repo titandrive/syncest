@@ -1230,6 +1230,117 @@ function Syncest:_syncConnectionRestored()
     self:_showConnectionNotification("connected")
 end
 
+local function annotation_items_from_data(data)
+    local items = {}
+    for _, item in ipairs(data and data.annotations or {}) do
+        if item.drawer or type(item.page) == "string" then
+            items[#items + 1] = item
+        end
+    end
+    for _, page_items in pairs(data and data.highlight or {}) do
+        if type(page_items) == "table" then
+            for _, item in ipairs(page_items) do
+                if item.drawer then items[#items + 1] = item end
+            end
+        end
+    end
+    return items
+end
+
+local function annotation_item_key(item)
+    if item.id then return "id:" .. tostring(item.id) end
+    if item.pos0 then
+        return "pos:" .. tostring(item.pos0) .. "|" .. tostring(item.pos1 or "")
+    end
+    return "dt:" .. tostring(item.datetime or "") .. "|"
+        .. tostring(item.text or "") .. "|" .. tostring(item.page or "")
+end
+
+local function annotation_snapshot(data)
+    local snapshot = {}
+    for _, item in ipairs(annotation_items_from_data(data)) do
+        snapshot[annotation_item_key(item)] = {
+            id = item.id, drawer = item.drawer, pos0 = item.pos0,
+            pos1 = item.pos1, page = item.page, pageno = item.pageno,
+            text = item.text, note = item.note, color = item.color,
+            datetime = item.datetime, datetime_updated = item.datetime_updated,
+        }
+    end
+    return snapshot
+end
+
+local function annotation_snapshot_changed(before, after)
+    for key, item in pairs(before) do
+        local current = after[key]
+        if not current then return true end
+        if tostring(item.note or "") ~= tostring(current.note or "")
+                or tostring(item.drawer or "") ~= tostring(current.drawer or "")
+                or tostring(item.color or "") ~= tostring(current.color or "") then
+            return true
+        end
+    end
+    for key in pairs(after) do
+        if not before[key] then return true end
+    end
+    return false
+end
+
+function Syncest:_installFileAnnotationWatcher()
+    local DocSettings = require("docsettings")
+    if DocSettings._syncest_original_open then return end
+    local plugin = self
+    DocSettings._syncest_original_open = DocSettings.open
+    DocSettings.open = function(class, file, ...)
+        local settings = DocSettings._syncest_original_open(class, file, ...)
+        if not settings or settings._syncest_flush_wrapped then return settings end
+        settings._syncest_flush_wrapped = true
+        settings._syncest_annotation_file = file
+        settings._syncest_annotation_snapshot = annotation_snapshot(settings.data)
+        local original_flush = settings.flush
+        settings.flush = function(instance, ...)
+            local before = instance._syncest_annotation_snapshot or {}
+            local result = original_flush(instance, ...)
+            local after = annotation_snapshot(instance.data)
+            instance._syncest_annotation_snapshot = after
+            local ReaderUI = require("apps/reader/readerui")
+            local live_reader = ReaderUI and ReaderUI.instance
+            if not plugin.ui.document
+                    and not (live_reader and live_reader.document)
+                    and annotation_snapshot_changed(before, after) then
+                local deleted = {}
+                for key, item in pairs(before) do
+                    if not after[key] then deleted[#deleted + 1] = item end
+                end
+                logger.info("Syncest file annotation watcher: changed file="
+                    .. tostring(instance._syncest_annotation_file)
+                    .. " deleted=" .. tostring(#deleted))
+                if #deleted > 0 then
+                    if not instance:readSetting("partial_md5_checksum") then
+                        local ok, hash = pcall(require("util").partialMD5,
+                            instance._syncest_annotation_file)
+                        if ok and hash then
+                            instance:saveSetting("partial_md5_checksum", hash)
+                        end
+                    end
+                    for _, item in ipairs(deleted) do
+                        SyncAnnotations:recordDeletion(instance, item)
+                    end
+                end
+                if plugin.settings.auto_sync
+                        and plugin.settings.auto_push_annotations ~= false
+                        and not WebDavAuth:needsSetup(plugin.settings) then
+                    plugin:pushFileAnnotations(
+                        instance._syncest_annotation_file, true)
+                else
+                    logger.info("Syncest file annotation watcher: auto-push disabled")
+                end
+            end
+            return result
+        end
+        return settings
+    end
+end
+
 function Syncest:init()
     self.last_sync_timestamp = 0
     self._last_pushed_page = nil
@@ -1268,6 +1379,7 @@ function Syncest:init()
     end
 
     self.ui.menu:registerToMainMenu(self)
+    self:_installFileAnnotationWatcher()
     self:onDispatcherRegisterActions()
     self:registerFileDialogButton()
     self:backgroundUpdateCheck()
@@ -1411,18 +1523,57 @@ local function open_file_annotation_ui(file)
     }
 end
 
+local function ensure_file_book_hash(file_ui, file)
+    local book_hash = SyncConfig:getDocumentIdentifier(file_ui)
+    if book_hash then return book_hash end
+    local ok, hash = pcall(require("util").partialMD5, file)
+    if not ok or not hash then
+        logger.warn("Syncest file annotations: could not hash " .. tostring(file))
+        return nil
+    end
+    file_ui.doc_settings:saveSetting("partial_md5_checksum", hash)
+    file_ui.doc_settings:flush()
+    logger.info("Syncest file annotations: stored book hash for " .. tostring(file))
+    return hash
+end
+
 function Syncest:_fileAnnotationPayload(file, deleted_item)
     local file_ui = open_file_annotation_ui(file)
-    if not file_ui then return nil end
-    local book_hash = SyncConfig:getDocumentIdentifier(file_ui)
+    if not file_ui then
+        logger.warn("Syncest file annotations: could not open settings for "
+            .. tostring(file))
+        return nil
+    end
+    local book_hash = ensure_file_book_hash(file_ui, file)
     if not book_hash then return nil end
     local notes = SyncAnnotations:getAnnotations(
         file_ui, self.settings, book_hash, true)
-    if deleted_item then
-        local tombstone = SyncAnnotations:buildNoteDescriptor(deleted_item, book_hash)
-        if tombstone then
-            tombstone.deletedAt = os.time() * 1000
+    local doc_sync = file_ui.doc_settings:readSetting("webdav_sync") or {}
+    local seen = {}
+    for _, note in ipairs(notes) do
+        if note.id then seen[note.id .. ":" .. tostring(note.deletedAt or "")] = true end
+    end
+    for _, tombstone in ipairs(doc_sync.deleted_notes or {}) do
+        tombstone.bookHash = book_hash
+        local key = tombstone.id
+            and (tombstone.id .. ":" .. tostring(tombstone.deletedAt or ""))
+        if not key or not seen[key] then
             notes[#notes + 1] = tombstone
+            if key then seen[key] = true end
+        end
+    end
+    if deleted_item then
+        local deleted_items = deleted_item[1] and deleted_item or { deleted_item }
+        for _, item in ipairs(deleted_items) do
+            local tombstone = SyncAnnotations:buildNoteDescriptor(item, book_hash)
+            if tombstone then
+                tombstone.deletedAt = os.time() * 1000
+                local key = tombstone.id .. ":" .. tostring(tombstone.deletedAt)
+                if not seen[key] then
+                    notes[#notes + 1] = tombstone
+                    seen[key] = true
+                end
+            end
         end
     end
     local meta = SyncConfig:getMetadataHashInfo(file_ui)
@@ -1433,9 +1584,22 @@ function Syncest:_fileAnnotationPayload(file, deleted_item)
 end
 
 function Syncest:pushFileAnnotations(file, notify, deleted_item)
+    logger.info("Syncest pushFileAnnotations: file=" .. tostring(file)
+        .. " deleted=" .. tostring(deleted_item ~= nil))
     if WebDavAuth:needsSetup(self.settings) then return false end
     local payload = self:_fileAnnotationPayload(file, deleted_item)
-    if not payload or #payload.notes == 0 then return false end
+    if not payload then return false end
+    if #payload.notes == 0 then
+        logger.info("Syncest pushFileAnnotations: no annotations to push")
+        if notify then
+            UIManager:show(InfoMessage:new{
+                text = _("No annotations found for this book."), timeout = 2,
+            })
+        end
+        return false
+    end
+    logger.info("Syncest pushFileAnnotations: pushing "
+        .. tostring(#payload.notes) .. " annotation(s)")
     return self:_backgroundPushAnnotations(payload, notify, file)
 end
 
@@ -1453,10 +1617,11 @@ function Syncest:_applyFileAnnotations(file, book_hash, notes, notify_fn)
 end
 
 function Syncest:pullFileAnnotations(file, notify)
+    logger.info("Syncest pullFileAnnotations: file=" .. tostring(file))
     if WebDavAuth:needsSetup(self.settings) then return false end
     local file_ui = open_file_annotation_ui(file)
     if not file_ui then return false end
-    local book_hash = SyncConfig:getDocumentIdentifier(file_ui)
+    local book_hash = ensure_file_book_hash(file_ui, file)
     if not book_hash then return false end
     return self:_backgroundPullAnnotations(book_hash, true, notify, file)
 end
@@ -2730,6 +2895,9 @@ end
 
 function Syncest:onAnnotationsModified(items)
     local external = items and items[1]
+    logger.info("Syncest onAnnotationsModified: external="
+        .. tostring(external and external.book_path or nil)
+        .. " in_book=" .. tostring(self.ui.document ~= nil))
     if external and external.book_path and not self.ui.document then
         local stored_item = {
             id = external.id,
