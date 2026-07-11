@@ -125,6 +125,7 @@ end
 
 function SyncStats:pull(settings, client, interactive, logout_fn, notify_fn)
     local since = settings.stats_pull_cursor or 0
+    if since > 100000000000 then since = math.floor(since / 1000) end
     logger.dbg("ReadestStats pull: since=" .. tostring(since)
         .. " interactive=" .. tostring(interactive))
     -- pullChanges requires since/type/book/meta_hash params (readest-sync-api.json).
@@ -145,7 +146,7 @@ function SyncStats:pull(settings, client, interactive, logout_fn, notify_fn)
             self:applyRemote(response.statBooks, response.statPages)
             local newest = since
             for _, p in ipairs(response.statPages or {}) do
-                local u = tonumber(p.updated_at_ms) or 0
+                local u = tonumber(p.start_time) or 0
                 if u > newest then newest = u end
             end
             if newest > since then

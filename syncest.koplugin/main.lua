@@ -676,7 +676,13 @@ function Syncest:_backgroundPushStats(notify)
             stats_last_pushed_at = os.time(),
         }
     end, function(result)
-        if not result.empty then
+        if result.empty then
+            if notify then
+                UIManager:show(InfoMessage:new{
+                    text = _("No new reading statistics to push."), timeout = 2,
+                })
+            end
+        else
             self.settings.stats_push_cursor = result.stats_push_cursor
             self.settings.stats_last_pushed_at = result.stats_last_pushed_at
             G_reader_settings:saveSetting("webdav_sync", self.settings)
@@ -698,6 +704,7 @@ function Syncest:_backgroundPullStats(notify)
         local Client = require("webdav_syncclient")
         local client = Client:new{ server = server }
         local since = settings.stats_pull_cursor or 0
+        if since > 100000000000 then since = math.floor(since / 1000) end
         local pulled = false
         local message = nil
         local response_data = nil
@@ -719,7 +726,7 @@ function Syncest:_backgroundPullStats(notify)
         Stats:applyRemote(stat_books, stat_pages)
         local newest = since
         for _, p in ipairs(stat_pages) do
-            local u = tonumber(p.updated_at_ms) or 0
+            local u = tonumber(p.start_time) or 0
             if u > newest then newest = u end
         end
         return {
@@ -733,8 +740,14 @@ function Syncest:_backgroundPullStats(notify)
             self.settings.stats_pull_cursor = result.stats_pull_cursor
             G_reader_settings:saveSetting("webdav_sync", self.settings)
         end
-        if notify and (tonumber(result.count) or 0) > 0 then
-            self:_autoNotify("stats", "pulled")
+        if notify then
+            if (tonumber(result.count) or 0) > 0 then
+                self:_autoNotify("stats", "pulled")
+            else
+                UIManager:show(InfoMessage:new{
+                    text = _("No new reading statistics to pull."), timeout = 2,
+                })
+            end
         end
     end, failure_fn)
 end

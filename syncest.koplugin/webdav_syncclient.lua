@@ -659,6 +659,9 @@ function WebDavSyncClient:pullChanges(params, callback)
     elseif t == "stats" then
         local data, read_status = self:_readJSON("stats.json")
         if data then
+            -- Stats start_time values and the pull cursor are Unix seconds.
+            -- Older Syncest builds accidentally persisted milliseconds.
+            if since > 100000000000 then since = math.floor(since / 1000) end
             -- Filter pages newer than the cursor; stamp updated_at_ms so the
             -- stats module can advance its pull cursor.
             if since > 0 and data.statPages then
