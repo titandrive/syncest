@@ -1289,10 +1289,22 @@ function Syncest:_installFileAnnotationWatcher()
     local DocSettings = require("docsettings")
     if DocSettings._syncest_original_open then return end
     local plugin = self
+    local function has_live_reader()
+        local ReaderUI = require("apps/reader/readerui")
+        return ReaderUI and ReaderUI.instance and ReaderUI.instance.document
+    end
     DocSettings._syncest_original_open = DocSettings.open
     DocSettings.open = function(class, file, ...)
         local settings = DocSettings._syncest_original_open(class, file, ...)
-        if not settings or settings._syncest_flush_wrapped then return settings end
+        if not settings then return settings end
+        if settings._syncest_flush_wrapped then
+            settings._syncest_annotation_file = file
+            if not has_live_reader() then
+                settings._syncest_annotation_snapshot =
+                    annotation_snapshot(settings.data)
+            end
+            return settings
+        end
         settings._syncest_flush_wrapped = true
         settings._syncest_annotation_file = file
         settings._syncest_annotation_snapshot = annotation_snapshot(settings.data)
@@ -1300,12 +1312,15 @@ function Syncest:_installFileAnnotationWatcher()
         settings.flush = function(instance, ...)
             local before = instance._syncest_annotation_snapshot or {}
             local result = original_flush(instance, ...)
+            if has_live_reader() then
+                -- Reader-side annotation changes use AnnotationsModified.
+                -- Avoid an O(annotation count) snapshot on every document save.
+                instance._syncest_annotation_snapshot = nil
+                return result
+            end
             local after = annotation_snapshot(instance.data)
             instance._syncest_annotation_snapshot = after
-            local ReaderUI = require("apps/reader/readerui")
-            local live_reader = ReaderUI and ReaderUI.instance
             if not plugin.ui.document
-                    and not (live_reader and live_reader.document)
                     and annotation_snapshot_changed(before, after) then
                 local deleted = {}
                 for key, item in pairs(before) do
