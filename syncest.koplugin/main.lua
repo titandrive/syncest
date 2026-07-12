@@ -634,11 +634,11 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
     return true
 end
 
-function Syncest:_backgroundPushStats(notify)
+function Syncest:_backgroundPushStats(notify, manual, retried)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
     if self:_deferUntilProgressAndAnnotationsIdle("background stats push", function()
-            self:_backgroundPushStats(notify)
+            self:_backgroundPushStats(notify, manual, retried)
         end) then return false end
     local settings = copy_settings(self.settings)
     local failure_fn = notify and function() self:_autoFailureNotify("stats") end or nil
@@ -677,10 +677,14 @@ function Syncest:_backgroundPushStats(notify)
         }
     end, function(result)
         if result.empty then
-            if notify then
-                UIManager:show(InfoMessage:new{
+            if manual and notify then
+                UIManager:show(Notification:new{
                     text = _("No new reading statistics to push."), timeout = 2,
                 })
+            elseif not retried then
+                UIManager:scheduleIn(2, function()
+                    self:_backgroundPushStats(notify, false, true)
+                end)
             end
         else
             self.settings.stats_push_cursor = result.stats_push_cursor
@@ -691,11 +695,11 @@ function Syncest:_backgroundPushStats(notify)
     end, failure_fn)
 end
 
-function Syncest:_backgroundPullStats(notify)
+function Syncest:_backgroundPullStats(notify, manual)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then return false end
     if self:_deferUntilProgressAndAnnotationsIdle("background stats pull", function()
-            self:_backgroundPullStats(notify)
+            self:_backgroundPullStats(notify, manual)
         end) then return false end
     local settings = copy_settings(self.settings)
     local failure_fn = notify and function() self:_autoFailureNotify("stats") end or nil
@@ -743,8 +747,8 @@ function Syncest:_backgroundPullStats(notify)
         if notify then
             if (tonumber(result.count) or 0) > 0 then
                 self:_autoNotify("stats", "pulled")
-            else
-                UIManager:show(InfoMessage:new{
+            elseif manual then
+                UIManager:show(Notification:new{
                     text = _("No new reading statistics to pull."), timeout = 2,
                 })
             end
@@ -2214,12 +2218,12 @@ function Syncest:addToMainMenu(menu_items)
             {
                 text = _("Push stats now"),
                 enabled_func = function() return configured end,
-                callback = function() self:pushBookStats(false, true) end,
+                callback = function() self:pushBookStats(false, true, true) end,
             },
             {
                 text = _("Pull stats now"),
                 enabled_func = function() return configured end,
-                callback = function() self:pullBookStats(false, true) end,
+                callback = function() self:pullBookStats(false, true, true) end,
             },
             {
                 text = _("Push vocab now"),
@@ -2427,15 +2431,15 @@ end
 
 -- ── Stats sync ─────────────────────────────────────────────────────
 
-function Syncest:pushBookStats(interactive, notify)
+function Syncest:pushBookStats(interactive, notify, manual)
     logger.info("Syncest pushBookStats: interactive=" .. tostring(interactive)
         .. " notify=" .. tostring(notify))
     if NetworkMgr:willRerunWhenOnline(
-            function() self:pushBookStats(interactive) end) then
+            function() self:pushBookStats(interactive, notify, manual) end) then
         return
     end
     if not interactive then
-        self:_backgroundPushStats(notify)
+        self:_backgroundPushStats(notify, manual == true)
         return
     end
     local client = self:ensureClient(interactive)
@@ -2444,15 +2448,15 @@ function Syncest:pushBookStats(interactive, notify)
     SyncStats:push(self.settings, client, interactive, notify_fn)
 end
 
-function Syncest:pullBookStats(interactive, notify)
+function Syncest:pullBookStats(interactive, notify, manual)
     logger.info("Syncest pullBookStats: interactive=" .. tostring(interactive)
         .. " notify=" .. tostring(notify))
     if NetworkMgr:willRerunWhenOnline(
-            function() self:pullBookStats(interactive) end) then
+            function() self:pullBookStats(interactive, notify, manual) end) then
         return
     end
     if not interactive then
-        self:_backgroundPullStats(notify)
+        self:_backgroundPullStats(notify, manual == true)
         return
     end
     local client = self:ensureClient(interactive)
@@ -2576,7 +2580,7 @@ function Syncest:pushAll(interactive)
             self:pushBookConfigAsync(true)
             self:pushBookNotes(false, true, true)
         end
-        self:pushBookStats(false, true)
+        self:pushBookStats(false, true, interactive == true)
         self:pushVocab(false, true)
     end, interactive)
 end
@@ -2589,7 +2593,7 @@ function Syncest:pullAll(interactive)
             self:pullBookConfigAsync(true, true)
             self:pullBookNotes(false, false, true)
         end
-        self:pullBookStats(false, true)
+        self:pullBookStats(false, true, interactive == true)
         self:pullVocab(false, true)
     end, interactive)
 end
