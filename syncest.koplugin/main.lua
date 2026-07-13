@@ -1428,6 +1428,24 @@ function Syncest:onDispatcherRegisterActions()
     Dispatcher:registerAction("syncest_pull_books",
         { category="none", event="SyncestPullBooks",
           title=_("Pull Syncest book library"), general=true })
+    Dispatcher:registerAction("syncest_push_stats",
+        { category="none", event="SyncestPushStats",
+          title=_("Push reading statistics to Syncest"), general=true })
+    Dispatcher:registerAction("syncest_pull_stats",
+        { category="none", event="SyncestPullStats",
+          title=_("Pull reading statistics from Syncest"), general=true })
+    Dispatcher:registerAction("syncest_push_vocab",
+        { category="none", event="SyncestPushVocab",
+          title=_("Push vocabulary to Syncest"), general=true })
+    Dispatcher:registerAction("syncest_pull_vocab",
+        { category="none", event="SyncestPullVocab",
+          title=_("Pull vocabulary from Syncest"), general=true })
+    Dispatcher:registerAction("syncest_push_all_annotations",
+        { category="none", event="SyncestPushAllAnnotations",
+          title=_("Push all annotations to Syncest"), general=true })
+    Dispatcher:registerAction("syncest_pull_all_annotations",
+        { category="none", event="SyncestPullAllAnnotations",
+          title=_("Pull all annotations from Syncest"), general=true })
     Dispatcher:registerAction("syncest_push_all",
         { category="none", event="SyncestPushAll",
           title=_("Push Syncest progress, annotations, stats, and vocab"), general=true })
@@ -2933,6 +2951,24 @@ function Syncest:onSyncestPushBooks()
 end
 function Syncest:onSyncestPullBooks()
     self:_runSafely("manual pull books", function() self:syncBooksLibrary("pull", true) end, true)
+end
+function Syncest:onSyncestPushStats()
+    self:_runSafely("manual push stats", function() self:pushBookStats(false, true, true) end, true)
+end
+function Syncest:onSyncestPullStats()
+    self:_runSafely("manual pull stats", function() self:pullBookStats(false, true, true) end, true)
+end
+function Syncest:onSyncestPushVocab()
+    self:_runSafely("manual push vocab", function() self:pushVocab(false, true) end, true)
+end
+function Syncest:onSyncestPullVocab()
+    self:_runSafely("manual pull vocab", function() self:pullVocab(false, true) end, true)
+end
+function Syncest:onSyncestPushAllAnnotations()
+    self:_runSafely("manual push all annotations", function() self:pushAllFileAnnotations(true) end, true)
+end
+function Syncest:onSyncestPullAllAnnotations()
+    self:_runSafely("manual pull all annotations", function() self:pullAllFileAnnotations(true) end, true)
 end
 function Syncest:onSyncestPushAll()
     self:pushAll(true)
