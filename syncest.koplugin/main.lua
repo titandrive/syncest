@@ -992,6 +992,7 @@ Syncest.default_settings = {
     auto_push_stats          = true,
     auto_push_stats_suspend  = false,
     auto_pull_stats          = true,
+    auto_pull_stats_book_open = false,
     auto_sync_catalog        = true,
     check_updates            = true,
     mirror_to_kosync         = false,
@@ -1199,6 +1200,7 @@ function Syncest:_cancelAutoPullTasks()
     local tasks = {
         "_auto_pull_progress_task",
         "_auto_pull_annotations_task",
+        "_auto_pull_book_stats_task",
         "_auto_pull_stats_task",
         "_auto_pull_vocab_task",
     }
@@ -1373,6 +1375,35 @@ function Syncest:_installFileAnnotationWatcher()
     end
 end
 
+-- KOReader's stock bookmark viewer emits AnnotationsModified when it removes
+-- highlights and notes, but not when it removes a plain dog-ear bookmark.
+-- Bridge that missing event into Syncest's existing deletion/tombstone path.
+function Syncest:_installReaderBookmarkDeletionWatcher()
+    local ReaderBookmark = require("apps/reader/modules/readerbookmark")
+    ReaderBookmark._syncest_plugin = self
+    if ReaderBookmark._syncest_original_remove_item_by_index then return end
+
+    ReaderBookmark._syncest_original_remove_item_by_index =
+        ReaderBookmark.removeItemByIndex
+    ReaderBookmark.removeItemByIndex = function(bookmark, index, ...)
+        local item = bookmark.ui and bookmark.ui.annotation
+            and bookmark.ui.annotation.annotations
+            and bookmark.ui.annotation.annotations[index]
+        local result = ReaderBookmark._syncest_original_remove_item_by_index(
+            bookmark, index, ...)
+        if item and not item.drawer then
+            local plugin = ReaderBookmark._syncest_plugin
+            if plugin and plugin.ui == bookmark.ui then
+                plugin:onAnnotationsModified({
+                    item,
+                    index_modified = -index,
+                })
+            end
+        end
+        return result
+    end
+end
+
 function Syncest:init()
     self.last_sync_timestamp = 0
     self._last_pushed_page = nil
@@ -1412,6 +1443,7 @@ function Syncest:init()
 
     self.ui.menu:registerToMainMenu(self)
     self:_installFileAnnotationWatcher()
+    self:_installReaderBookmarkDeletionWatcher()
     self:onDispatcherRegisterActions()
     self:registerFileDialogButton()
     self:backgroundUpdateCheck()
@@ -1421,59 +1453,59 @@ end
 function Syncest:onDispatcherRegisterActions()
     Dispatcher:registerAction("syncest_open_library",
         { category="none", event="SyncestOpenLibrary",
-          title=_("Open Syncest Library"), general=true })
+          title=_("Syncest: Open Syncest Library"), general=true })
     Dispatcher:registerAction("syncest_push_books",
         { category="none", event="SyncestPushBooks",
-          title=_("Push Syncest book library"), general=true })
+          title=_("Syncest: Push Syncest book library"), general=true })
     Dispatcher:registerAction("syncest_pull_books",
         { category="none", event="SyncestPullBooks",
-          title=_("Pull Syncest book library"), general=true })
+          title=_("Syncest: Pull Syncest book library"), general=true })
     Dispatcher:registerAction("syncest_push_stats",
         { category="none", event="SyncestPushStats",
-          title=_("Push reading statistics to Syncest"), general=true })
+          title=_("Syncest: Push reading statistics to Syncest"), general=true })
     Dispatcher:registerAction("syncest_pull_stats",
         { category="none", event="SyncestPullStats",
-          title=_("Pull reading statistics from Syncest"), general=true })
+          title=_("Syncest: Pull reading statistics from Syncest"), general=true })
     Dispatcher:registerAction("syncest_push_vocab",
         { category="none", event="SyncestPushVocab",
-          title=_("Push vocabulary to Syncest"), general=true })
+          title=_("Syncest: Push vocabulary to Syncest"), general=true })
     Dispatcher:registerAction("syncest_pull_vocab",
         { category="none", event="SyncestPullVocab",
-          title=_("Pull vocabulary from Syncest"), general=true })
+          title=_("Syncest: Pull vocabulary from Syncest"), general=true })
     Dispatcher:registerAction("syncest_push_all_annotations",
         { category="none", event="SyncestPushAllAnnotations",
-          title=_("Push all annotations to Syncest"), general=true })
+          title=_("Syncest: Push all annotations to Syncest"), general=true })
     Dispatcher:registerAction("syncest_pull_all_annotations",
         { category="none", event="SyncestPullAllAnnotations",
-          title=_("Pull all annotations from Syncest"), general=true })
+          title=_("Syncest: Pull all annotations from Syncest"), general=true })
     Dispatcher:registerAction("syncest_push_all",
         { category="none", event="SyncestPushAll",
-          title=_("Push Syncest progress, annotations, stats, and vocab"), general=true })
+          title=_("Syncest: Push Syncest progress, annotations, stats, and vocab"), general=true })
     Dispatcher:registerAction("syncest_pull_all",
         { category="none", event="SyncestPullAll",
-          title=_("Pull Syncest progress, annotations, stats, and vocab"), general=true })
+          title=_("Syncest: Pull Syncest progress, annotations, stats, and vocab"), general=true })
 end
 
 function Syncest:onDispatcherRegisterReaderActions()
     Dispatcher:registerAction("syncest_set_autosync",
         { category="string", event="SyncestToggleAutoSync",
-          title=_("Set auto progress sync"), reader=true,
+          title=_("Syncest: Set auto progress sync"), reader=true,
           args={true, false}, toggle={_("on"), _("off")} })
     Dispatcher:registerAction("syncest_toggle_autosync",
         { category="none", event="SyncestToggleAutoSync",
-          title=_("Toggle auto Syncest sync"), reader=true })
+          title=_("Syncest: Toggle auto Syncest sync"), reader=true })
     Dispatcher:registerAction("syncest_push_progress",
         { category="none", event="SyncestPushProgress",
-          title=_("Push progress to Syncest"), reader=true })
+          title=_("Syncest: Push progress to Syncest"), reader=true })
     Dispatcher:registerAction("syncest_pull_progress",
         { category="none", event="SyncestPullProgress",
-          title=_("Pull progress from Syncest"), reader=true, separator=true })
+          title=_("Syncest: Pull progress from Syncest"), reader=true, separator=true })
     Dispatcher:registerAction("syncest_push_annotations",
         { category="none", event="SyncestPushAnnotations",
-          title=_("Push annotations to Syncest"), reader=true })
+          title=_("Syncest: Push annotations to Syncest"), reader=true })
     Dispatcher:registerAction("syncest_pull_annotations",
         { category="none", event="SyncestPullAnnotations",
-          title=_("Pull annotations from Syncest"), reader=true, separator=true })
+          title=_("Syncest: Pull annotations from Syncest"), reader=true, separator=true })
 end
 
 function Syncest:onReaderReady()
@@ -1498,6 +1530,15 @@ function Syncest:onReaderReady()
                 end)
             end
             UIManager:scheduleIn(5, self._auto_pull_annotations_task)
+        end
+        if self.settings.auto_pull_stats_book_open == true then
+            self._auto_pull_book_stats_task = function()
+                self._auto_pull_book_stats_task = nil
+                self:_runSafely("book open pull stats", function()
+                    self:pullBookStats(false, true)
+                end)
+            end
+            UIManager:scheduleIn(8, self._auto_pull_book_stats_task)
         end
     end
     self._last_pushed_page = nil
@@ -2162,6 +2203,18 @@ function Syncest:addToMainMenu(menu_items)
                         callback = function()
                             self.settings.auto_push_stats_suspend =
                                 self.settings.auto_push_stats_suspend ~= true
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
+                        end,
+                    },
+                    {
+                        text = _("Pull stats on book open"),
+                        enabled_func = function() return self.settings.auto_sync end,
+                        checked_func = function()
+                            return self.settings.auto_pull_stats_book_open == true
+                        end,
+                        callback = function()
+                            self.settings.auto_pull_stats_book_open =
+                                self.settings.auto_pull_stats_book_open ~= true
                             G_reader_settings:saveSetting("webdav_sync", self.settings)
                         end,
                     },

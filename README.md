@@ -20,7 +20,7 @@ Syncest was made primarily to be used alongside [Obsidian MoonSync](https://gith
   - Push progress, stats, and annotations on book close.
   - Push annotations when they change.
   - Push vocab after word lookup.
-  - Pull progress and annotations on book open.
+  - Pull progress and annotations on book open, with an optional stats pull.
   - Pull stats and vocab on app open.
 - Background update checks with in-plugin install prompts.
 
@@ -88,6 +88,7 @@ Book-specific pulls happen when a book opens:
 
 - Pull reading progress on book open.
 - Pull annotations on book open.
+- Optionally pull stats on book open.
 
 Optional resume pulls can also run when KOReader returns to the foreground with a book already open:
 
