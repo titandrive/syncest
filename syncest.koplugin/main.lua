@@ -513,7 +513,7 @@ function Syncest:_promptBackwardProgress(book_hash, config, apply_result)
     })
 end
 
-function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
+function Syncest:_backgroundPullProgress(book_hash, notify, force_apply, file)
     if self._auto_pull_progress_running then
         logger.info("Syncest background progress pull: already running, skipped")
         return false
@@ -599,6 +599,14 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply)
 
         logger.info("Syncest background progress pull: success")
         self:_syncConnectionRestored()
+        if file then
+            if result.config then
+                self:_applyFileProgress(file, result.config)
+            end
+            self:_applyProgressReadingStatus(book_hash, result)
+            if notify then self:_autoNotify("progress", "pulled", 0) end
+            return
+        end
         if self:getBookIdentifiers() ~= book_hash then
             logger.warn("Syncest background progress pull: current book changed, skipping apply")
             return
@@ -1568,7 +1576,7 @@ function Syncest:registerFileDialogButton()
                 local ext = file:match("%.([^./\\]+)$")
                 if not readest_format_for_ext(ext) then return nil end
                 return {{
-                    text = _("Add to Syncest Library"),
+                    text = _("Add to library"),
                     enabled = not WebDavAuth:needsSetup(plugin.settings),
                     callback = function()
                         local fc = FileManager.instance and FileManager.instance.file_chooser
@@ -1577,13 +1585,25 @@ function Syncest:registerFileDialogButton()
                         plugin:addToLibrary(file)
                     end,
                 }, {
-                    text = _("Push annotations to Syncest"),
+                    text = _("Push progress"),
+                    enabled = not WebDavAuth:needsSetup(plugin.settings),
+                    callback = function()
+                        plugin:pushFileProgress(file, true)
+                    end,
+                }, {
+                    text = _("Pull progress"),
+                    enabled = not WebDavAuth:needsSetup(plugin.settings),
+                    callback = function()
+                        plugin:pullFileProgress(file, true)
+                    end,
+                }, {
+                    text = _("Push annotations"),
                     enabled = not WebDavAuth:needsSetup(plugin.settings),
                     callback = function()
                         plugin:pushFileAnnotations(file, true)
                     end,
                 }, {
-                    text = _("Pull annotations from Syncest"),
+                    text = _("Pull annotations"),
                     enabled = not WebDavAuth:needsSetup(plugin.settings),
                     callback = function()
                         plugin:pullFileAnnotations(file, true)
@@ -1626,6 +1646,88 @@ local function ensure_file_book_hash(file_ui, file)
     file_ui.doc_settings:flush()
     logger.info("Syncest file annotations: stored book hash for " .. tostring(file))
     return hash
+end
+
+local function file_progress_config(file_ui, book_hash)
+    local doc = file_ui.doc_settings
+    local xpointer = doc:readSetting("last_xpointer") or ""
+    local current_page = tonumber(doc:readSetting("last_page"))
+    local page_count = tonumber(doc:readSetting("doc_pages"))
+    local percent = tonumber(doc:readSetting("percent_finished"))
+
+    if not current_page and (not xpointer or xpointer == "") then return nil end
+    local config = {
+        bookHash = book_hash,
+        progress = current_page and { current_page, page_count or 0 } or "",
+        xpointer = xpointer,
+        currentPage = current_page,
+        pageCount = page_count,
+        progressPercent = percent,
+        updatedAt = os.time() * 1000,
+        bookMetadata = SyncConfig:getMetadataHashInfo(file_ui),
+    }
+    return config
+end
+
+function Syncest:pushFileProgress(file, notify)
+    logger.info("Syncest pushFileProgress: file=" .. tostring(file))
+    if WebDavAuth:needsSetup(self.settings) then return false end
+    local file_ui = open_file_annotation_ui(file)
+    if not file_ui then return false end
+    local book_hash = ensure_file_book_hash(file_ui, file)
+    if not book_hash then return false end
+    local config = file_progress_config(file_ui, book_hash)
+    if not config then
+        if notify then
+            UIManager:show(InfoMessage:new{
+                text = _("No saved reading progress found for this book."), timeout = 3,
+            })
+        end
+        return false
+    end
+    local payload = self:_addProgressReadingStatus({
+        books = {}, notes = {}, configs = { config },
+    }, book_hash)
+    return self:_backgroundPushProgress(payload, notify)
+end
+
+function Syncest:_applyFileProgress(file, config)
+    if not config then return false end
+    local file_ui = open_file_annotation_ui(file)
+    if not file_ui then return false end
+    local doc = file_ui.doc_settings
+    local progress = config.progress
+    local page = tonumber(config.currentPage)
+        or (type(progress) == "table" and tonumber(progress[1]))
+    local page_count = tonumber(config.pageCount)
+        or (type(progress) == "table" and tonumber(progress[2]))
+    local percent = tonumber(config.progressPercent)
+    if not percent and page and page_count and page_count > 0 then
+        percent = page / page_count
+    end
+    if config.xpointer and config.xpointer ~= "" then
+        doc:saveSetting("last_xpointer", config.xpointer)
+    elseif page then
+        doc:saveSetting("last_page", page)
+    else
+        return false
+    end
+    if percent then doc:saveSetting("percent_finished", percent) end
+    local sync = doc:readSetting("webdav_sync") or {}
+    sync.last_synced_at_config = os.time()
+    doc:saveSetting("webdav_sync", sync)
+    doc:flush()
+    return true
+end
+
+function Syncest:pullFileProgress(file, notify)
+    logger.info("Syncest pullFileProgress: file=" .. tostring(file))
+    if WebDavAuth:needsSetup(self.settings) then return false end
+    local file_ui = open_file_annotation_ui(file)
+    if not file_ui then return false end
+    local book_hash = ensure_file_book_hash(file_ui, file)
+    if not book_hash then return false end
+    return self:_backgroundPullProgress(book_hash, notify, true, file)
 end
 
 function Syncest:_fileAnnotationPayload(file, deleted_item)
@@ -1877,13 +1979,11 @@ function Syncest:_addLocalRow(file, hash, format, _size)
     local existing = store:_getRowRaw(hash)
     if existing and existing.deleted_at == nil then
         store:upsertBook({ hash = hash, title = existing.title or title,
-            file_path = file, local_present = 1, updated_at = now })
+            format = existing.format or format, file_path = file,
+            local_present = 1, updated_at = now })
         local LibraryWidget = require("syncest_lib.librarywidget")
         if LibraryWidget._menu then LibraryWidget.refresh() end
-        UIManager:show(InfoMessage:new{
-            text = _("Already in your library: ") .. (existing.title or title),
-            timeout = 2,
-        })
+        self:_pushSingleLibraryBook(store:_getRowRaw(hash))
         return
     end
 
@@ -1892,9 +1992,71 @@ function Syncest:_addLocalRow(file, hash, format, _size)
         updated_at = now, _clear_fields = { "deleted_at" } })
     local LibraryWidget = require("syncest_lib.librarywidget")
     if LibraryWidget._menu then LibraryWidget.refresh() end
-    UIManager:show(InfoMessage:new{
-        text = _("Added to library: ") .. title, timeout = 2,
-    })
+    self:_pushSingleLibraryBook(store:_getRowRaw(hash))
+end
+
+function Syncest:_pushSingleLibraryBook(row)
+    if not row then return end
+
+    local syncbooks = require("syncest_lib.syncbooks")
+    local DataStorage = require("datastorage")
+    local progress = InfoMessage:new{
+        text = _("Uploading to Syncest Library…") .. " " .. (row.title or ""),
+    }
+    UIManager:show(progress)
+
+    syncbooks.uploadBook(row, {
+        settings = self.settings,
+        covers_dir = DataStorage:getSettingsDir() .. "/syncest_covers",
+    }, function(uploaded, upload_error, upload_status)
+        if not uploaded then
+            UIManager:close(progress)
+            UIManager:show(InfoMessage:new{
+                text = _("Book upload failed: ")
+                    .. tostring(upload_error or upload_status or _("unknown error")),
+                timeout = 5,
+            })
+            return
+        end
+
+        local now = math.floor(os.time() * 1000)
+        local store = self:getLibraryStore()
+        if store then
+            store:upsertBook({
+                hash = row.hash,
+                title = row.title,
+                cloud_present = 1,
+                uploaded_at = now,
+                updated_at = now,
+                _clear_fields = { "deleted_at" },
+            })
+        end
+        row.cloud_present = 1
+        row.uploaded_at = now
+        row.updated_at = now
+        row.deleted_at = nil
+
+        syncbooks.pushBook(row, {
+            client = WebDavAuth:getClient(self.settings),
+            settings = self.settings,
+        }, function(pushed, push_error)
+            UIManager:close(progress)
+            local LibraryWidget = require("syncest_lib.librarywidget")
+            if LibraryWidget._menu then LibraryWidget.refresh() end
+            if pushed then
+                UIManager:show(InfoMessage:new{
+                    text = _("Uploaded to Syncest Library: ") .. (row.title or ""),
+                    timeout = 3,
+                })
+            else
+                UIManager:show(InfoMessage:new{
+                    text = _("Book uploaded, but library update failed: ")
+                        .. tostring(push_error or _("unknown error")),
+                    timeout = 5,
+                })
+            end
+        end)
+    end)
 end
 
 function Syncest:onAddToSyncestLibrary(file)
