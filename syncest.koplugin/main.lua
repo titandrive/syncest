@@ -654,7 +654,10 @@ function Syncest:_backgroundPushStats(notify, manual, retried)
         local Stats = require("syncest_syncstats")
         local Client = require("webdav_syncclient")
         local client = Client:new{ server = server }
-        local cursor = settings.stats_push_cursor or 0
+        -- A manual push is also the repair path: resend the complete local
+        -- history so older rows missed by another device can be merged into
+        -- stats.json. Automatic pushes remain incremental.
+        local cursor = manual and 0 or (settings.stats_push_cursor or 0)
         local books, pages = Stats:collectSince(cursor)
         if #pages == 0 then
             return { success = true, empty = true }
@@ -715,7 +718,10 @@ function Syncest:_backgroundPullStats(notify, manual)
         local Stats = require("syncest_syncstats")
         local Client = require("webdav_syncclient")
         local client = Client:new{ server = server }
-        local since = settings.stats_pull_cursor or 0
+        -- A manual pull must reconcile the complete remote history. Using the
+        -- saved cursor here can permanently hide an older row that was missed
+        -- before the cursor advanced. Automatic pulls remain incremental.
+        local since = manual and 0 or (settings.stats_pull_cursor or 0)
         if since > 100000000000 then since = math.floor(since / 1000) end
         local pulled = false
         local message = nil

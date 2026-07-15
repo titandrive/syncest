@@ -127,6 +127,8 @@ The main Syncest menu also includes:
 
 `Push all` and `Pull all` do not upload or download book files or the book catalog. Book library sync is kept separate on purpose.
 
+Manual stats pushes and pulls reconcile the complete statistics history. Automatic stats sync uses an incremental cursor for efficiency.
+
 ## KOSync Mirroring
 
 If KOReader's KOSync plugin is also configured, enable `Mirror progress to KOSync` in Syncest settings. When enabled, Syncest asks KOSync to mirror progress pushes during manual progress pushes, page-turn autosync, and book-close progress pushes.
