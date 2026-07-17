@@ -17,6 +17,7 @@ Syncest was made primarily to be used alongside [Obsidian MoonSync](https://gith
 - Mirror progress pushes to KOReader KOSync when enabled.
 - Auto sync on common reading events:
   - Push progress every X page turns.
+  - Push progress when a chapter is finished.
   - Push progress, stats, and annotations on book close.
   - Push annotations when they change.
   - Push vocab after word lookup.
@@ -102,6 +103,7 @@ Global pulls happen when KOReader/Syncest starts:
 Pushes happen when data changes or when a book closes:
 
 - Push every X page turns.
+- Optionally push reading progress when a chapter is finished.
 - Push reading progress on book close.
 - Optionally push reading progress on app suspend.
 - Push annotations on change.
@@ -131,7 +133,7 @@ Manual stats pushes and pulls reconcile the complete statistics history. Automat
 
 ## KOSync Mirroring
 
-If KOReader's KOSync plugin is also configured, enable `Mirror progress to KOSync` in Syncest settings. When enabled, Syncest asks KOSync to mirror progress pushes during manual progress pushes, page-turn autosync, and book-close progress pushes.
+If KOReader's KOSync plugin is also configured, enable `Mirror progress to KOSync` in Syncest settings. When enabled, Syncest asks KOSync to mirror progress pushes during manual progress pushes, page-turn and chapter-finish autosync, and book-close progress pushes.
 
 ## Updates
 

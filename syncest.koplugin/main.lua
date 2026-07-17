@@ -390,10 +390,32 @@ function Syncest:_markProgressPayloadPushed(payload)
     self.ui.doc_settings:flush()
 end
 
+function Syncest:_notifyProgressPushResult(notify, success, unchanged)
+    if not notify then return end
+    if notify == "chapter" then
+        local text
+        if not success then
+            text = _("Chapter progress push failed")
+        elseif unchanged then
+            text = _("Chapter progress already synced")
+        else
+            text = _("Chapter progress pushed")
+        end
+        UIManager:show(Notification:new{
+            text = text,
+            timeout = 4,
+        })
+    elseif success then
+        self:_autoNotify("progress", "pushed")
+    else
+        self:_autoFailureNotify("progress")
+    end
+end
+
 function Syncest:_backgroundPushProgress(payload, notify)
     if self:_progressPayloadAlreadyPushed(payload) then
         logger.info("Syncest background progress push: unchanged, skipped")
-        if notify then self:_autoNotify("progress", "pushed") end
+        self:_notifyProgressPushResult(notify, true, true)
         return true
     end
     if self._auto_push_progress_running then
@@ -407,6 +429,7 @@ function Syncest:_backgroundPushProgress(payload, notify)
     local server = self.settings and self.settings.sync_server
     if type(server) ~= "table" then
         logger.warn("Syncest background progress push: missing sync server")
+        self:_notifyProgressPushResult(notify, false)
         return false
     end
 
@@ -438,7 +461,7 @@ function Syncest:_backgroundPushProgress(payload, notify)
         logger.warn("Syncest background progress push: launch failed "
             .. tostring(pid_or_err))
         os.remove(result_file)
-        if notify then self:_autoFailureNotify("progress") end
+        self:_notifyProgressPushResult(notify, false)
         return false
     end
 
@@ -459,7 +482,7 @@ function Syncest:_backgroundPushProgress(payload, notify)
             self._auto_push_progress_running = false
             self._auto_push_progress_pid = nil
             os.remove(result_file)
-            if notify then self:_autoFailureNotify("progress") end
+            self:_notifyProgressPushResult(notify, false)
             return
         end
 
@@ -473,11 +496,11 @@ function Syncest:_backgroundPushProgress(payload, notify)
                 self:_queueSyncMarker(payload.configs[1])
             end
             self:_markProgressPayloadPushed(payload)
-            if notify then self:_autoNotify("progress", "pushed") end
+            self:_notifyProgressPushResult(notify, true)
         else
             logger.warn("Syncest background progress push: failed "
                 .. tostring(message))
-            if notify then self:_autoFailureNotify("progress") end
+            self:_notifyProgressPushResult(notify, false)
         end
         local pending = self._pending_auto_push_progress
         if pending then
@@ -995,6 +1018,7 @@ Syncest.default_settings = {
     auto_push_progress       = true,
     auto_push_progress_close = true,
     auto_push_progress_suspend = false,
+    auto_push_progress_chapter = false,
     push_every_x_pages       = true,
     push_page_interval       = 1,
     auto_pull_progress       = true,
@@ -1421,6 +1445,7 @@ end
 function Syncest:init()
     self.last_sync_timestamp = 0
     self._last_pushed_page = nil
+    self._last_observed_page = nil
     self.settings = G_reader_settings:readSetting("webdav_sync", self.default_settings)
     if not self.settings.progress_push_mode_migrated then
         if self.settings.auto_push_progress ~= false then
@@ -1523,6 +1548,11 @@ function Syncest:onDispatcherRegisterReaderActions()
 end
 
 function Syncest:onReaderReady()
+    if self.x_page_push_task then
+        UIManager:unschedule(self.x_page_push_task)
+        self.x_page_push_task = nil
+    end
+    self.x_page_push_notify = nil
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
         if STARTUP_AUTO_PULL_PROGRESS_ENABLED
                 and self.settings.auto_pull_progress ~= false then
@@ -1556,6 +1586,7 @@ function Syncest:onReaderReady()
         end
     end
     self._last_pushed_page = nil
+    self._last_observed_page = nil
     self:onDispatcherRegisterReaderActions()
 end
 
@@ -2234,6 +2265,18 @@ function Syncest:addToMainMenu(menu_items)
                                     end
                                 end,
                             })
+                        end,
+                    },
+                    {
+                        text = _("Push reading progress on chapter finish"),
+                        enabled_func = function() return self.settings.auto_sync end,
+                        checked_func = function()
+                            return self.settings.auto_push_progress_chapter == true
+                        end,
+                        callback = function()
+                            self.settings.auto_push_progress_chapter =
+                                self.settings.auto_push_progress_chapter ~= true
+                            G_reader_settings:saveSetting("webdav_sync", self.settings)
                         end,
                     },
                     {
@@ -3249,6 +3292,11 @@ function Syncest:_pushOnAppSuspend(reason)
 end
 
 function Syncest:onCloseDocument()
+    if self.x_page_push_task then
+        UIManager:unschedule(self.x_page_push_task)
+        self.x_page_push_task = nil
+    end
+    self.x_page_push_notify = nil
     local push_annotations = self.settings.auto_push_annotations_close
     if push_annotations == nil then
         push_annotations = self.settings.auto_push_annotations ~= false
@@ -3294,20 +3342,58 @@ function Syncest:onPageUpdate(page)
         logger.warn("Syncest onPageUpdate: auto progress push skipped")
         return
     end
+    local should_push = false
+    local notify_push = false
+    if self.settings.auto_push_progress_chapter == true
+            and self._last_observed_page
+            and page == self._last_observed_page + 1
+            and self.ui and self.ui.toc
+            and self.ui.toc.isChapterStart
+            and self.ui.toc:isChapterStart(page) then
+        logger.info("Syncest onPageUpdate: chapter finished at page "
+            .. tostring(self._last_observed_page))
+        should_push = true
+        notify_push = true
+    end
+    self._last_observed_page = page
+
     if self.settings.push_every_x_pages == true then
         local interval = self.settings.push_page_interval or 1
         if self._last_pushed_page == nil
                 or math.abs(page - self._last_pushed_page) >= interval then
             self._last_pushed_page = page
-            if self.x_page_push_task then
-                UIManager:unschedule(self.x_page_push_task)
-            end
-            self.x_page_push_task = function()
-                self.x_page_push_task = nil
-                self:pushBookConfig(false, false)
-            end
-            UIManager:scheduleIn(PAGE_TURN_PUSH_DELAY, self.x_page_push_task)
+            should_push = true
         end
+    end
+    if should_push then
+        self.x_page_push_notify = self.x_page_push_notify or notify_push
+        if self.x_page_push_task then
+            UIManager:unschedule(self.x_page_push_task)
+        end
+        self.x_page_push_task = function()
+            if not self.settings.auto_sync then
+                self.x_page_push_task = nil
+                self.x_page_push_notify = nil
+                return
+            end
+            if self.x_page_push_notify == true then
+                local now = os.time()
+                local wait_until = math.max(
+                    self._suppress_auto_push_config_until or 0,
+                    (self.last_sync_timestamp or 0) + API_CALL_DEBOUNCE_DELAY + 1)
+                if now < wait_until then
+                    logger.info("Syncest chapter progress push: delayed until "
+                        .. tostring(wait_until))
+                    UIManager:scheduleIn(wait_until - now, self.x_page_push_task)
+                    return
+                end
+            end
+            self.x_page_push_task = nil
+            local notify = self.x_page_push_notify == true and "chapter" or false
+            self.x_page_push_notify = nil
+            self:pushBookConfig(false, notify)
+        end
+        UIManager:scheduleIn(PAGE_TURN_PUSH_DELAY, self.x_page_push_task)
     end
 end
 
