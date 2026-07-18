@@ -32,6 +32,7 @@ local SYNC_PLUGIN_INERT_DIAGNOSTIC = false
 local AUTO_SYNC_POLL_INTERVAL = 0.25
 local PROGRESS_PULL_POLL_INTERVAL = 0.05
 local PAGE_TURN_PUSH_DELAY = 5
+local CHAPTER_PUSH_DELAY = 0.1
 local AUTO_SYNC_MAX_POLLS = 260
 local BOOKS_SYNC_MAX_POLLS = 1200
 local RESUME_PROGRESS_PULL_DEBOUNCE = 5
@@ -3391,9 +3392,18 @@ function Syncest:onPageUpdate(page)
             self.x_page_push_task = nil
             local notify = self.x_page_push_notify == true and "chapter" or false
             self.x_page_push_notify = nil
-            self:pushBookConfig(false, notify)
+            if notify == "chapter" then
+                -- Chapter changes are discrete events, so do not hold them behind
+                -- the general page-turn API debounce. The background progress
+                -- queue still serializes requests and keeps only the latest state.
+                self:pushBookConfigAsync(notify)
+            else
+                self:pushBookConfig(false, notify)
+            end
         end
-        UIManager:scheduleIn(PAGE_TURN_PUSH_DELAY, self.x_page_push_task)
+        UIManager:scheduleIn(
+            notify_push and CHAPTER_PUSH_DELAY or PAGE_TURN_PUSH_DELAY,
+            self.x_page_push_task)
     end
 end
 
