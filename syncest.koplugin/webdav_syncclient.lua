@@ -196,8 +196,9 @@ local function safe_title_filename(title)
     return "_" .. name .. ".json"
 end
 
-local function withTimeout(label, fn, block_timeout)
+local function withTimeout(label, fn, block_timeout, retries)
     block_timeout = block_timeout or SYNC_TIMEOUT
+    retries = retries == nil and SYNC_RETRIES or retries
     local prev_timeout = http.TIMEOUT
     local prev_file_block_timeout = socketutil.FILE_BLOCK_TIMEOUT
     local prev_file_total_timeout = socketutil.FILE_TOTAL_TIMEOUT
@@ -208,7 +209,7 @@ local function withTimeout(label, fn, block_timeout)
     logger.info("WebDavSyncClient " .. label .. ": start timeout=" .. tostring(block_timeout)
         .. " total_timeout=" .. tostring(SYNC_TOTAL_TIMEOUT))
     local ok, a, b, c
-    for attempt = 1, SYNC_RETRIES + 1 do
+    for attempt = 1, retries + 1 do
         ok, a, b, c = pcall(fn)
         local result = tostring(a or "")
         local transient = not ok
@@ -217,7 +218,7 @@ local function withTimeout(label, fn, block_timeout)
             or result:lower():find("network unreachable", 1, true)
             or result:lower():find("timeout", 1, true)
             or result:lower():find("closed", 1, true)
-        if not transient or attempt > SYNC_RETRIES then
+        if not transient or attempt > retries then
             break
         end
         logger.warn("WebDavSyncClient " .. label .. ": transient failure attempt="
@@ -274,12 +275,12 @@ end
 
 -- ── JSON read/write ────────────────────────────────────────────────
 
-function WebDavSyncClient:_readJSON(rel_path, block_timeout)
+function WebDavSyncClient:_readJSON(rel_path, block_timeout, retries)
     local tmp = tmp_path(rel_path)
     local ok, code = withTimeout("readJSON " .. tostring(rel_path), function()
         return WebDavApi:downloadFile(
             self:_url(rel_path), self.username, self.password, tmp)
-    end, block_timeout)
+    end, block_timeout, retries)
     if not ok then
         logger.warn("WebDavSyncClient _readJSON: network error for " .. rel_path .. ": " .. tostring(code))
         return nil, READ_FAILED
@@ -641,7 +642,8 @@ function WebDavSyncClient:pullChanges(params, callback)
 
     if t == "configs" then
         local data, read_status = self:_readJSON(
-            "sync/" .. book .. "/progress.json", PROGRESS_PULL_TIMEOUT)
+            "sync/" .. book .. "/progress.json", PROGRESS_PULL_TIMEOUT,
+            params.retries)
         if read_status == READ_FAILED then
             callback(false, {}, "read_failed")
             return

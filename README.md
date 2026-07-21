@@ -95,6 +95,8 @@ Optional resume pulls can also run when KOReader returns to the foreground with 
 
 - Pull reading progress on app resume.
 
+Resume progress pulls use short background retries while Wi-Fi, DNS, or a VPN reconnects. Syncest only reports a disconnection if the final attempt fails, and update checks wait until the progress pull finishes.
+
 Global pulls happen when KOReader/Syncest starts:
 
 - Pull stats on app open.

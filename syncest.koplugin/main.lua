@@ -36,6 +36,8 @@ local CHAPTER_PUSH_DELAY = 0.1
 local AUTO_SYNC_MAX_POLLS = 260
 local BOOKS_SYNC_MAX_POLLS = 1200
 local RESUME_PROGRESS_PULL_DEBOUNCE = 5
+local RESUME_PROGRESS_INITIAL_DELAY = 0.5
+local RESUME_PROGRESS_RETRY_DELAYS = { 2, 5 }
 local APP_SUSPEND_PUSH_DEBOUNCE = 10
 
 local function write_background_result(path, success, message)
@@ -537,7 +539,14 @@ function Syncest:_promptBackwardProgress(book_hash, config, apply_result)
     })
 end
 
-function Syncest:_backgroundPullProgress(book_hash, notify, force_apply, file)
+function Syncest:_backgroundPullProgress(book_hash, notify, force_apply, file, options)
+    options = options or {}
+    local function failed(message)
+        if notify and not options.suppress_failure_notify then
+            self:_autoFailureNotify("progress")
+        end
+        if options.on_failure then options.on_failure(message) end
+    end
     if self._auto_pull_progress_running then
         logger.info("Syncest background progress pull: already running, skipped")
         return false
@@ -564,6 +573,7 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply, file)
                 since = 0,
                 type = "configs",
                 book = book_hash,
+                retries = options.retries,
             }, function(success, response, status)
                 result.success = success == true
                 result.status = status
@@ -586,7 +596,7 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply, file)
         logger.warn("Syncest background progress pull: launch failed "
             .. tostring(pid_or_err))
         os.remove(result_file)
-        if notify then self:_autoFailureNotify("progress") end
+        failed("launch failed")
         return false
     end
 
@@ -607,7 +617,7 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply, file)
             self._auto_pull_progress_running = false
             self._auto_pull_progress_pid = nil
             os.remove(result_file)
-            if notify then self:_autoFailureNotify("progress") end
+            failed("timed out")
             return
         end
 
@@ -617,12 +627,13 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply, file)
         if not result or result.success ~= true then
             logger.warn("Syncest background progress pull: failed "
                 .. tostring(result and result.message or message))
-            if notify then self:_autoFailureNotify("progress") end
+            failed(result and result.message or message)
             return
         end
 
         logger.info("Syncest background progress pull: success")
         self:_syncConnectionRestored()
+        if options.on_success then options.on_success() end
         if file then
             if result.config then
                 self:_applyFileProgress(file, result.config)
@@ -2119,32 +2130,111 @@ function Syncest:backgroundUpdateCheck()
     end)
 end
 
+function Syncest:_finishResumeProgressPull(cycle)
+    if self._resume_progress_cycle ~= cycle then return end
+    self._resume_progress_task = nil
+    self:backgroundUpdateCheck()
+end
+
+function Syncest:_cancelResumeProgressPull()
+    self._resume_progress_cycle = (self._resume_progress_cycle or 0) + 1
+    if self._resume_progress_task then
+        UIManager:unschedule(self._resume_progress_task)
+        self._resume_progress_task = nil
+    end
+end
+
 function Syncest:_pullProgressOnResume()
     if not self.settings.auto_sync
             or self.settings.auto_pull_progress_resume ~= true
             or WebDavAuth:needsSetup(self.settings)
             or not (self.ui and self.ui.document) then
-        return
+        return false
     end
     local now = os.time()
     if self._last_resume_progress_pull_at
             and now - self._last_resume_progress_pull_at < RESUME_PROGRESS_PULL_DEBOUNCE then
-        return
+        return true
     end
     self._last_resume_progress_pull_at = now
-    self:_runSafely("resume auto pull progress", function()
-        self:pullBookConfig(false, true, false)
-    end)
+    self:_cancelResumeProgressPull()
+    local cycle = self._resume_progress_cycle
+    local attempt = 1
+    local run_attempt
+    local schedule_attempt
+
+    schedule_attempt = function(delay)
+        if self._resume_progress_cycle ~= cycle then return end
+        self._resume_progress_task = function()
+            self._resume_progress_task = nil
+            run_attempt()
+        end
+        UIManager:scheduleIn(delay, self._resume_progress_task)
+    end
+
+    run_attempt = function()
+        if self._resume_progress_cycle ~= cycle
+                or not (self.ui and self.ui.document) then
+            return
+        end
+        if NetworkMgr:willRerunWhenOnline(function()
+                if self._resume_progress_cycle == cycle then
+                    schedule_attempt(0.1)
+                end
+            end) then
+            return
+        end
+
+        local book_hash = self:getBookIdentifiers()
+        if not book_hash then
+            self:_finishResumeProgressPull(cycle)
+            return
+        end
+        self._suppress_auto_push_config_until =
+            os.time() + AUTO_PUSH_SUPPRESS_AFTER_PULL
+        local attempt_number = attempt
+        logger.info("Syncest resume progress pull: attempt "
+            .. tostring(attempt_number))
+        local launched = self:_backgroundPullProgress(
+            book_hash, true, false, nil, {
+                retries = 0,
+                suppress_failure_notify = true,
+                on_success = function()
+                    self:_finishResumeProgressPull(cycle)
+                end,
+                on_failure = function()
+                    if self._resume_progress_cycle ~= cycle then return end
+                    local delay = RESUME_PROGRESS_RETRY_DELAYS[attempt_number]
+                    if delay then
+                        attempt = attempt_number + 1
+                        logger.info("Syncest resume progress pull: retrying in "
+                            .. tostring(delay) .. " seconds")
+                        schedule_attempt(delay)
+                    else
+                        self:_autoFailureNotify("progress")
+                        self:_finishResumeProgressPull(cycle)
+                    end
+                end,
+            })
+        if not launched then
+            schedule_attempt(0.5)
+        end
+    end
+
+    schedule_attempt(RESUME_PROGRESS_INITIAL_DELAY)
+    return true
 end
 
 function Syncest:onResume()
-    self:backgroundUpdateCheck()
-    self:_pullProgressOnResume()
+    if not self:_pullProgressOnResume() then
+        self:backgroundUpdateCheck()
+    end
 end
 
 function Syncest:onLeaveStandby()
-    self:backgroundUpdateCheck()
-    self:_pullProgressOnResume()
+    if not self:_pullProgressOnResume() then
+        self:backgroundUpdateCheck()
+    end
 end
 
 function Syncest:updateMenuItems()
@@ -3313,10 +3403,12 @@ function Syncest:onCloseDocument()
 end
 
 function Syncest:onSuspend()
+    self:_cancelResumeProgressPull()
     self:_pushOnAppSuspend("onSuspend")
 end
 
 function Syncest:onPause()
+    self:_cancelResumeProgressPull()
     self:_pushOnAppSuspend("onPause")
 end
 
