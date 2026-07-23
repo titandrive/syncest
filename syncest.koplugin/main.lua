@@ -406,7 +406,7 @@ function Syncest:_notifyProgressPushResult(notify, success, unchanged)
         end
         UIManager:show(Notification:new{
             text = text,
-            timeout = 4,
+            timeout = 2,
         })
     elseif success then
         self:_autoNotify("progress", "pushed")
@@ -1186,18 +1186,18 @@ function Syncest:_showConnectionNotification(kind)
         text = kind == "connected"
             and _("Syncest connected")
             or _("Syncest disconnected"),
-        timeout = kind == "connected" and 2 or 3,
+        timeout = 2,
     })
 end
 
-function Syncest:_showBooksSyncNotification(text, timeout)
+function Syncest:_showBooksSyncNotification(text, _timeout)
     if self._books_sync_notification then
         pcall(function() UIManager:close(self._books_sync_notification) end)
         self._books_sync_notification = nil
     end
     local notification = Notification:new{
         text = text,
-        timeout = timeout or 60,
+        timeout = 2,
     }
     self._books_sync_notification = notification
     UIManager:show(notification)
@@ -2125,8 +2125,10 @@ end
 function Syncest:backgroundUpdateCheck()
     if self.settings.check_updates == false then return end
     syncest_updater().checkBackground(function(ver)
-        Notification:notify(_("Syncest update available: v") .. ver,
-            Notification.SOURCE_ALWAYS_SHOW)
+        UIManager:show(Notification:new{
+            text = _("Syncest update available: v") .. ver,
+            timeout = 2,
+        })
     end)
 end
 
