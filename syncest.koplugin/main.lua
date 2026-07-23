@@ -1045,6 +1045,7 @@ Syncest.default_settings = {
     auto_pull_stats_book_open = false,
     auto_sync_catalog        = true,
     check_updates            = true,
+    connection_notifications = true,
     mirror_to_kosync         = false,
     user_id      = nil,
     user_name    = nil,
@@ -1174,6 +1175,7 @@ function Syncest:_autoNotify(label, action, delay)
 end
 
 function Syncest:_showConnectionNotification(kind)
+    if self.settings.connection_notifications == false then return end
     local now = os.time()
     if self._last_connection_notification == kind
         and self._last_connection_notification_at
@@ -2278,22 +2280,41 @@ function Syncest:addToMainMenu(menu_items)
         local items = {
             {
                 text_func = function()
+                    local status
                     if WebDavAuth:needsSetup(self.settings) then
-                        return _("Configure WebDAV account")
+                        status = _("Not configured")
+                    elseif self._syncest_connection_state == true then
+                        status = _("Connected")
+                    elseif self._syncest_connection_state == false then
+                        status = _("Disconnected")
                     else
-                        return T(_("Disconnect (%1)"), self.settings.user_name or "")
+                        status = _("Idle")
                     end
+                    return _("Syncest") .. ": " .. status
                 end,
-                callback_func = function()
-                    if WebDavAuth:needsSetup(self.settings) then
-                        return function(menu)
-                            WebDavAuth:setup(self.settings, menu)
-                        end
-                    else
-                        return function(menu)
-                            WebDavAuth:disconnect(self.settings, menu)
-                        end
-                    end
+                sub_item_table_func = function()
+                    return {
+                        {
+                            text = _("Configure WebDAV"),
+                            callback_func = function()
+                                return function(menu)
+                                    WebDavAuth:setup(self.settings, menu)
+                                end
+                            end,
+                        },
+                        {
+                            text = _("Connection notifications"),
+                            checked_func = function()
+                                return self.settings.connection_notifications ~= false
+                            end,
+                            callback = function()
+                                self.settings.connection_notifications =
+                                    self.settings.connection_notifications == false
+                                G_reader_settings:saveSetting(
+                                    "webdav_sync", self.settings)
+                            end,
+                        },
+                    }
                 end,
             },
             {
@@ -2648,7 +2669,7 @@ function Syncest:addToMainMenu(menu_items)
                     separator = true,
                 },
             }
-            -- Insert after the 4 settings items (Configure, Auto sync, Sync settings, Version)
+            -- Insert after the 4 settings items (Connection, Auto sync, Sync settings, Updates)
             for i = #book_items, 1, -1 do
                 table.insert(items, 5, book_items[i])
             end

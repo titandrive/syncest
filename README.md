@@ -41,7 +41,7 @@ After Syncest is installed, future updates can be installed from `Syncest` -> `S
 
 ## Setup
 
-Open `Syncest` -> `Configure WebDAV account` and choose a WebDAV target through KOReader's cloud storage picker. Syncest stores all data under the folder path configured there.
+Open `Syncest` -> `Syncest: Not configured` -> `Configure WebDAV` and choose a WebDAV target through KOReader's cloud storage picker. After configuration, the connection entry shows `Syncest: Idle` until the first sync request finishes. It then shows `Syncest: Connected` after a successful request or `Syncest: Disconnected` after a failed request. The same submenu includes a connection-notification toggle, which is enabled by default. Syncest stores all data under the folder path configured there.
 
 This works well with self-hosted storage such as Nextcloud, a WebDAV server exposed over a VPN, or any other WebDAV-compatible backend KOReader can reach.
 
