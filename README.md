@@ -97,6 +97,8 @@ Optional resume pulls can also run when KOReader returns to the foreground with 
 
 Resume progress pulls use short background retries while Wi-Fi, DNS, or a VPN reconnects. Syncest only reports a disconnection if the final attempt fails, and update checks wait until the progress pull finishes.
 
+If an automatic push fails, Syncest remembers the affected progress, annotations, stats, or vocabulary as pending. Pending changes survive KOReader restarts and are pushed once a resume, network-online callback, manual sync, or other successful Syncest request confirms that the connection is available again. Syncest does not poll the server on a recurring timer.
+
 Global pulls happen when KOReader/Syncest starts:
 
 - Pull stats on app open.

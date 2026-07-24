@@ -416,8 +416,11 @@ function Syncest:_notifyProgressPushResult(notify, success, unchanged)
 end
 
 function Syncest:_backgroundPushProgress(payload, notify)
+    local config = payload and payload.configs and payload.configs[1]
+    local book_hash = config and config.bookHash
     if self:_progressPayloadAlreadyPushed(payload) then
         logger.info("Syncest background progress push: unchanged, skipped")
+        self:_clearPendingBook("progress", book_hash)
         self:_notifyProgressPushResult(notify, true, true)
         return true
     end
@@ -499,6 +502,7 @@ function Syncest:_backgroundPushProgress(payload, notify)
                 self:_queueSyncMarker(payload.configs[1])
             end
             self:_markProgressPayloadPushed(payload)
+            self:_clearPendingBook("progress", book_hash)
             self:_notifyProgressPushResult(notify, true)
         else
             logger.warn("Syncest background progress push: failed "
@@ -723,6 +727,7 @@ function Syncest:_backgroundPushStats(notify, manual, retried)
         }
     end, function(result)
         if result.empty then
+            self:_clearPendingGlobal("stats")
             if manual and notify then
                 UIManager:show(Notification:new{
                     text = _("No new reading statistics to push."), timeout = 2,
@@ -735,6 +740,7 @@ function Syncest:_backgroundPushStats(notify, manual, retried)
         else
             self.settings.stats_push_cursor = result.stats_push_cursor
             self.settings.stats_last_pushed_at = result.stats_last_pushed_at
+            self:_clearPendingGlobal("stats")
             G_reader_settings:saveSetting("webdav_sync", self.settings)
             if notify then self:_autoNotify("stats", "pushed") end
         end
@@ -833,8 +839,11 @@ function Syncest:_backgroundPushVocab(notify)
     end, function(result)
         if not result.empty then
             self.settings.vocab_last_pushed_at = result.vocab_last_pushed_at
+            self:_clearPendingGlobal("vocab")
             G_reader_settings:saveSetting("webdav_sync", self.settings)
             if notify then self:_autoNotify("vocab", "pushed") end
+        else
+            self:_clearPendingGlobal("vocab")
         end
     end, failure_fn)
 end
@@ -924,6 +933,8 @@ function Syncest:_backgroundPushAnnotations(payload, notify, doc_path)
                 doc_settings:saveSetting("webdav_sync", synced)
                 doc_settings:flush()
             end
+            self:_clearPendingBook(
+                "annotations", payload and payload.bookHash, doc_path)
             if notify then self:_autoNotify("annotations", "pushed") end
         end,
         failure_fn)
@@ -986,10 +997,6 @@ end
 
 function Syncest:pushBookConfigAsync(notify)
     logger.info("Syncest pushBookConfigAsync: notify=" .. tostring(notify))
-    if NetworkMgr:willRerunWhenOnline(
-            function() self:pushBookConfigAsync(notify) end) then
-        return
-    end
     local config = SyncConfig:getCurrentBookConfig(self.ui)
     if not config then return end
     local payload = self:_addProgressReadingStatus({
@@ -998,6 +1005,11 @@ function Syncest:pushBookConfigAsync(notify)
         configs = { config },
     })
     local already_pushed = self:_progressPayloadAlreadyPushed(payload)
+    self:_markPendingBook("progress", nil, config.bookHash)
+    if NetworkMgr:willRerunWhenOnline(
+            function() self:pushBookConfigAsync(notify) end) then
+        return
+    end
     local launched = self:_backgroundPushProgress(payload, notify)
     if launched then
         self.last_sync_timestamp = os.time()
@@ -1205,6 +1217,125 @@ function Syncest:_showBooksSyncNotification(text, _timeout)
     UIManager:show(notification)
 end
 
+function Syncest:_currentDocumentPath()
+    local path = self.ui and self.ui.doc_settings
+        and self.ui.doc_settings:readSetting("doc_path") or nil
+    return path ~= "" and path or nil
+end
+
+function Syncest:_pendingPushes()
+    if type(self.settings.pending_pushes) ~= "table" then
+        self.settings.pending_pushes = {}
+    end
+    local pending = self.settings.pending_pushes
+    if type(pending.books) ~= "table" then pending.books = {} end
+    return pending
+end
+
+function Syncest:_savePendingPushes()
+    G_reader_settings:saveSetting("webdav_sync", self.settings)
+end
+
+function Syncest:_armPendingPushConnectivity()
+    NetworkMgr:willRerunWhenOnline(function()
+        self:_schedulePendingPushFlush(0.1)
+    end)
+end
+
+function Syncest:_markPendingGlobal(kind)
+    local pending = self:_pendingPushes()
+    if pending[kind] == true then return end
+    pending[kind] = true
+    self:_savePendingPushes()
+    self:_armPendingPushConnectivity()
+end
+
+function Syncest:_markPendingBook(kind, path, hash)
+    path = path or self:_currentDocumentPath()
+    hash = hash or (self.ui and self.ui.doc_settings
+        and self:getBookIdentifiers() or nil)
+    if not path and not hash then return end
+    local pending = self:_pendingPushes()
+    local key = path or ("hash:" .. tostring(hash))
+    local book = pending.books[key] or {}
+    book.path = path or book.path
+    book.hash = hash or book.hash
+    if book[kind] == true then return end
+    book[kind] = true
+    pending.books[key] = book
+    self:_savePendingPushes()
+    self:_armPendingPushConnectivity()
+end
+
+function Syncest:_clearPendingGlobal(kind)
+    local pending = self:_pendingPushes()
+    if pending[kind] ~= true then return end
+    pending[kind] = nil
+    self:_savePendingPushes()
+end
+
+function Syncest:_clearPendingBook(kind, hash, path)
+    local pending = self:_pendingPushes()
+    local changed = false
+    for key, book in pairs(pending.books) do
+        if (path and (key == path or book.path == path))
+                or (hash and book.hash == hash) then
+            if book[kind] then
+                book[kind] = nil
+                changed = true
+            end
+            if not book.progress and not book.annotations then
+                pending.books[key] = nil
+            end
+        end
+    end
+    if changed then self:_savePendingPushes() end
+end
+
+function Syncest:_hasPendingPushes()
+    local pending = self:_pendingPushes()
+    return pending.stats == true or pending.vocab == true
+        or next(pending.books) ~= nil
+end
+
+function Syncest:_schedulePendingPushFlush(delay)
+    if self._pending_push_flush_task or not self:_hasPendingPushes() then return end
+    self._pending_push_flush_task = function()
+        self._pending_push_flush_task = nil
+        self:_flushPendingPushes()
+    end
+    UIManager:scheduleIn(delay or 0.5, self._pending_push_flush_task)
+end
+
+function Syncest:_flushPendingPushes()
+    if not self.settings.auto_sync or WebDavAuth:needsSetup(self.settings) then return end
+    local pending = self:_pendingPushes()
+    local current_hash = self.ui and self.ui.doc_settings
+        and self:getBookIdentifiers() or nil
+    for _, book in pairs(pending.books) do
+        local is_current = current_hash and book.hash == current_hash
+        if book.progress then
+            if is_current then
+                self:pushBookConfigAsync(true)
+            elseif book.path then
+                self:pushFileProgress(book.path, true)
+            end
+        end
+        if book.annotations then
+            if is_current then
+                self:pushBookNotes(false, true, true)
+            elseif book.path then
+                self:pushFileAnnotations(book.path, true)
+            end
+        end
+        -- Existing background queues serialize each data type. Process one
+        -- book at a time; a successful push schedules the next flush.
+        break
+    end
+    if pending.stats then self:pushBookStats(false, true) end
+    if pending.vocab then self:pushVocab(false, true) end
+end
+
 function Syncest:_mirrorProgressToKOSync()
     if not self.settings.mirror_to_kosync then return false end
     local kosync = self.ui and self.ui.kosync
@@ -1295,10 +1426,12 @@ function Syncest:_syncConnectionRestored()
     end
     if self._syncest_connection_state ~= false then
         self._syncest_connection_state = true
+        self:_schedulePendingPushFlush()
         return
     end
     self._syncest_connection_state = true
     self:_showConnectionNotification("connected")
+    self:_schedulePendingPushFlush()
 end
 
 local function annotation_items_from_data(data)
@@ -1739,6 +1872,7 @@ function Syncest:pushFileProgress(file, notify)
     local payload = self:_addProgressReadingStatus({
         books = {}, notes = {}, configs = { config },
     }, book_hash)
+    self:_markPendingBook("progress", file, book_hash)
     return self:_backgroundPushProgress(payload, notify)
 end
 
@@ -1835,6 +1969,7 @@ function Syncest:pushFileAnnotations(file, notify, deleted_item)
     if not payload then return false end
     if #payload.notes == 0 then
         logger.info("Syncest pushFileAnnotations: no annotations to push")
+        self:_clearPendingBook("annotations", payload.bookHash, file)
         if notify then
             UIManager:show(InfoMessage:new{
                 text = _("No annotations found for this book."), timeout = 2,
@@ -1844,6 +1979,7 @@ function Syncest:pushFileAnnotations(file, notify, deleted_item)
     end
     logger.info("Syncest pushFileAnnotations: pushing "
         .. tostring(#payload.notes) .. " annotation(s)")
+    self:_markPendingBook("annotations", file, payload.bookHash)
     return self:_backgroundPushAnnotations(payload, notify, file)
 end
 
@@ -2230,12 +2366,14 @@ function Syncest:_pullProgressOnResume()
 end
 
 function Syncest:onResume()
+    self:_schedulePendingPushFlush(0.5)
     if not self:_pullProgressOnResume() then
         self:backgroundUpdateCheck()
     end
 end
 
 function Syncest:onLeaveStandby()
+    self:_schedulePendingPushFlush(0.5)
     if not self:_pullProgressOnResume() then
         self:backgroundUpdateCheck()
     end
@@ -2830,6 +2968,7 @@ end
 function Syncest:pushBookStats(interactive, notify, manual)
     logger.info("Syncest pushBookStats: interactive=" .. tostring(interactive)
         .. " notify=" .. tostring(notify))
+    self:_markPendingGlobal("stats")
     if NetworkMgr:willRerunWhenOnline(
             function() self:pushBookStats(interactive, notify, manual) end) then
         return
@@ -2866,6 +3005,7 @@ end
 function Syncest:pushVocab(interactive, notify)
     logger.info("Syncest pushVocab: interactive=" .. tostring(interactive)
         .. " notify=" .. tostring(notify))
+    self:_markPendingGlobal("vocab")
     if NetworkMgr:willRerunWhenOnline(
             function() self:pushVocab(interactive) end) then
         return
@@ -2929,10 +3069,15 @@ function Syncest:pushBookNotes(interactive, full_sync, notify)
     end
     annotations = SyncAnnotations:addCurrentBookmarks(
         annotations, self.ui, book_hash)
-    if #annotations == 0 and not current_bookmark_ids then return end
+    if #annotations == 0 and not current_bookmark_ids then
+        self:_clearPendingBook(
+            "annotations", book_hash, self:_currentDocumentPath())
+        return
+    end
     for _, t in ipairs(annotations) do
         t.bookMetadata = meta
     end
+    self:_markPendingBook("annotations", nil, book_hash)
     self:_backgroundPushAnnotations({
         books = {},
         notes = annotations,
@@ -3441,6 +3586,7 @@ function Syncest:onWordLookedUp()
     if not self.settings.auto_sync or WebDavAuth:needsSetup(self.settings) then return end
     if self.settings.auto_push_vocab == false then return end
     self._vocab_dirty = true
+    self:_markPendingGlobal("vocab")
     if self._vocab_push_task then UIManager:unschedule(self._vocab_push_task) end
     self._vocab_push_task = function()
         self._vocab_push_task = nil
@@ -3482,6 +3628,7 @@ function Syncest:onPageUpdate(page)
         end
     end
     if should_push then
+        self:_markPendingBook("progress")
         self.x_page_push_notify = self.x_page_push_notify or notify_push
         if self.x_page_push_task then
             UIManager:unschedule(self.x_page_push_task)
@@ -3551,6 +3698,7 @@ function Syncest:onAnnotationsModified(items)
         if self.settings.auto_sync
                 and self.settings.auto_push_annotations ~= false
                 and not WebDavAuth:needsSetup(self.settings) then
+            self:_markPendingBook("annotations", external.book_path)
             self._file_annotations_push_tasks =
                 self._file_annotations_push_tasks or {}
             local old_task = self._file_annotations_push_tasks[external.book_path]
@@ -3559,6 +3707,13 @@ function Syncest:onAnnotationsModified(items)
             end
             local file = external.book_path
             local deleted_item = not still_present and stored_item or nil
+            if deleted_item and file_ui and file_ui.doc_settings
+                    and file_ui.doc_settings:readSetting("partial_md5_checksum") then
+                -- Persist the tombstone so a failed first attempt can rebuild
+                -- it during the later reconnect flush.
+                SyncAnnotations:recordDeletion(file_ui.doc_settings, deleted_item)
+                deleted_item = nil
+            end
             local task
             task = function()
                 self._file_annotations_push_tasks[file] = nil
@@ -3603,6 +3758,7 @@ function Syncest:onAnnotationsModified(items)
     end
     if self.settings.auto_sync and self.settings.auto_push_annotations ~= false
             and not WebDavAuth:needsSetup(self.settings) then
+        self:_markPendingBook("annotations")
         if self._annotations_push_task then
             UIManager:unschedule(self._annotations_push_task)
         end
@@ -3616,6 +3772,10 @@ end
 
 function Syncest:onCloseWidget()
     self:_cancelAutoPullTasks()
+    if self._pending_push_flush_task then
+        UIManager:unschedule(self._pending_push_flush_task)
+        self._pending_push_flush_task = nil
+    end
     if self.delayed_push_task then
         UIManager:unschedule(self.delayed_push_task)
         self.delayed_push_task = nil
