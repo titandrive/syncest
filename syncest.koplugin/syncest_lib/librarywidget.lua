@@ -765,8 +765,188 @@ function M._open(opts, internal)
 end
 
 -- ---------------------------------------------------------------------------
+local function downloadDialogTitle(download_dir, filename)
+    return tostring(download_dir or "") .. "/" .. tostring(filename or "")
+end
+
+local function showCloudBookInformation(row)
+    local metadata = {}
+    if type(row.metadata_json) == "string" then
+        local ok, parsed = pcall(require("json").decode, row.metadata_json)
+        if ok and type(parsed) == "table" then metadata = parsed end
+    end
+    local lines = {
+        _("Title") .. ": " .. tostring(row.title or metadata.title or ""),
+        _("Author") .. ": " .. tostring(row.author or metadata.authors or ""),
+        _("Format") .. ": " .. tostring(row.format or ""),
+    }
+    local optional = {
+        { _("Series"), row.series or metadata.series },
+        { _("Publisher"), metadata.publisher },
+        { _("Language"), metadata.language },
+        { _("Description"), metadata.description or metadata.summary },
+    }
+    for _, field in ipairs(optional) do
+        if field[2] and tostring(field[2]) ~= "" then
+            lines[#lines + 1] = field[1] .. ": " .. tostring(field[2])
+        end
+    end
+    local TextViewer = require("ui/widget/textviewer")
+    UIManager:show(TextViewer:new{
+        title = _("Book information"),
+        title_multilines = true,
+        text = table.concat(lines, "\n\n"),
+        text_type = "book_info",
+    })
+end
+
+local function showCloudDownloadDialog(row, opts)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local PathChooser = require("ui/widget/pathchooser")
+    local ConfirmBox = require("ui/widget/confirmbox")
+
+    local download_dir = opts.settings.library_download_dir
+        or G_reader_settings:readSetting("download_dir")
+        or G_reader_settings:readSetting("home_dir")
+        or require("datastorage"):getDataDir()
+    local filename = syncbooks.build_local_filename(row)
+    if not filename then
+        UIManager:show(InfoMessage:new{
+            text = _("Unsupported book format."),
+            timeout = 3,
+        })
+        return
+    end
+
+    local dialog
+    local function refreshTitle()
+        dialog:setTitle(downloadDialogTitle(download_dir, filename))
+    end
+    local function startDownload()
+        UIManager:close(dialog)
+        local progress = InfoMessage:new{
+            text = _("Downloading…") .. " " .. (row.title or ""),
+        }
+        UIManager:show(progress)
+        syncbooks.downloadBook(row, {
+            settings = opts.settings,
+            download_dir = download_dir,
+            local_filename = filename,
+        }, function(success, dst_or_err, status)
+            UIManager:close(progress)
+            if not success then
+                local msg = (status == 404)
+                    and _("Cloud copy unavailable.")
+                    or _("Download failed.")
+                UIManager:show(InfoMessage:new{ text = msg, timeout = 3 })
+                return
+            end
+            M._store:upsertBook({
+                hash = row.hash,
+                title = row.title,
+                local_present = 1,
+                file_path = dst_or_err,
+            })
+            M.refresh()
+            local read_prompt = ConfirmBox:new{
+                text = _("File saved to:")
+                    .. "\n" .. dst_or_err
+                    .. "\n\n" .. _("Would you like to read the downloaded book now?"),
+                ok_text = _("Read now"),
+                ok_callback = function()
+                    local ReaderUI = require("apps/reader/readerui")
+                    M.close()
+                    ReaderUI:showReader(dst_or_err)
+                end,
+            }
+            UIManager:nextTick(function()
+                UIManager:show(read_prompt)
+            end)
+        end)
+    end
+
+    dialog = ButtonDialog:new{
+        title = downloadDialogTitle(download_dir, filename),
+        title_multilines = true,
+        buttons = {
+            {
+                {
+                    text = _("Download"),
+                    callback = startDownload,
+                },
+            },
+            {
+                {
+                    text = _("Choose folder"),
+                    callback = function()
+                        local picker
+                        picker = PathChooser:new{
+                            title = _("Pick a folder for downloaded books"),
+                            path = download_dir,
+                            select_directory = true,
+                            select_file = false,
+                            onConfirm = function(path)
+                                download_dir = path
+                                opts.settings.library_download_dir = path
+                                G_reader_settings:saveSetting(
+                                    "webdav_sync", opts.settings)
+                                refreshTitle()
+                            end,
+                        }
+                        UIManager:show(picker)
+                    end,
+                },
+                {
+                    text = _("Change filename"),
+                    callback = function()
+                        local input
+                        input = InputDialog:new{
+                            title = _("Enter filename"),
+                            input = filename,
+                            buttons = {
+                                {
+                                    {
+                                        text = _("Cancel"),
+                                        id = "close",
+                                        callback = function()
+                                            UIManager:close(input)
+                                        end,
+                                    },
+                                    {
+                                        text = _("Set filename"),
+                                        is_enter_default = true,
+                                        callback = function()
+                                            local value = input:getInputValue()
+                                            if value and value ~= "" then
+                                                filename = value
+                                            end
+                                            UIManager:close(input)
+                                            refreshTitle()
+                                        end,
+                                    },
+                                },
+                            },
+                        }
+                        UIManager:show(input)
+                        input:onShowKeyboard()
+                    end,
+                },
+            },
+            {
+                {
+                    text = _("Book information"),
+                    callback = function()
+                        showCloudBookInformation(row)
+                    end,
+                },
+            },
+        },
+    }
+    UIManager:show(dialog)
+end
+
 -- handleTap(item, opts) — tap dispatch. Local books open immediately;
--- cloud-only books prompt for download.
+-- cloud-only books use an OPDS-style download workflow.
 -- ---------------------------------------------------------------------------
 function M.handleTap(item, opts)
     if not item then return end
@@ -819,51 +999,9 @@ function M.handleTap(item, opts)
         end
     end
 
-    -- Cloud-only path: confirm + download + open
+    -- Cloud-only path: OPDS-style download options and post-download prompt.
     if row.cloud_present == 1 then
-        local ConfirmBox = require("ui/widget/confirmbox")
-        UIManager:show(ConfirmBox:new{
-            text = _("Download this book from Readest?") .. "\n\n" .. (row.title or ""),
-            ok_text = _("Download"),
-            ok_callback = function()
-                local download_dir = opts.settings.library_download_dir
-                    or G_reader_settings:readSetting("home_dir")
-                if not download_dir or download_dir == "" then
-                    UIManager:show(InfoMessage:new{
-                        text = _("Set Home folder in File Manager first to enable downloads."),
-                        timeout = 3,
-                    })
-                    return
-                end
-                local progress = InfoMessage:new{
-                    text = _("Downloading…") .. " " .. (row.title or ""),
-                }
-                UIManager:show(progress)
-                syncbooks.downloadBook(row, {
-                    settings      = opts.settings,
-                    download_dir  = download_dir,
-                }, function(success, dst_or_err, status)
-                    UIManager:close(progress)
-                    if not success then
-                        local msg = (status == 404)
-                            and _("Cloud copy unavailable.")
-                            or _("Download failed.")
-                        UIManager:show(InfoMessage:new{ text = msg, timeout = 3 })
-                        return
-                    end
-                    -- Update store: row now has a local file
-                    M._store:upsertBook({
-                        hash = row.hash, title = row.title,
-                        local_present = 1, file_path = dst_or_err,
-                    })
-                    -- Hand off to the reader and close the Library — no
-                    -- M.refresh() needed since the Menu is going away.
-                    local ReaderUI = require("apps/reader/readerui")
-                    M.close()
-                    ReaderUI:showReader(dst_or_err)
-                end)
-            end,
-        })
+        showCloudDownloadDialog(row, opts)
         return
     end
 end

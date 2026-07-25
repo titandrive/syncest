@@ -636,10 +636,15 @@ function M.downloadBook(book, opts, cb)
     end
 
     local rel   = string.format("books/%s/%s.%s", book.hash, book.hash, ext)
-    local local_name = M.build_local_filename(book)
+    local local_name = opts.local_filename or M.build_local_filename(book)
     if not local_name then
         if cb then cb(false, "could not build local filename") end
         return false, "could not build local filename"
+    end
+    local_name = local_name:match("([^/\\]+)$")
+    if not local_name or local_name == "" then
+        if cb then cb(false, "invalid local filename") end
+        return false, "invalid local filename"
     end
 
     if not lfs.attributes(opts.download_dir, "mode") then
