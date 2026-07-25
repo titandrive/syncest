@@ -769,6 +769,40 @@ local function downloadDialogTitle(download_dir, filename)
     return tostring(download_dir or "") .. "/" .. tostring(filename or "")
 end
 
+-- Download callbacks run while their progress dialog is being dismissed.
+-- Refresh both Syncest's menu and KOReader's underlying library/file views
+-- after the UI stack has processed that close. Merely rebuilding our own
+-- item table leaves KOReader's cached File Manager/History views stale until
+-- they are manually refreshed or the application is restarted.
+local function refreshAfterDownload(callback)
+    UIManager:nextTick(function()
+        M.refresh()
+        if M._menu then
+            UIManager:setDirty(M._menu, "ui")
+        end
+
+        local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
+        local fm = ok and FileManager.instance
+        if fm then
+            if fm.history and fm.history.booklist_menu then
+                fm.history:updateItemTable()
+            end
+            if fm.collections and fm.collections.booklist_menu then
+                fm.collections:updateItemTable()
+            end
+            if fm.filesearcher and fm.filesearcher.booklist_menu then
+                fm.filesearcher:updateItemTable()
+            end
+            if fm.file_chooser then
+                fm:onRefresh()
+                UIManager:setDirty(fm, "ui")
+            end
+        end
+
+        if callback then callback() end
+    end)
+end
+
 local function showCloudBookInformation(row)
     local metadata = {}
     if type(row.metadata_json) == "string" then
@@ -847,7 +881,6 @@ local function showCloudDownloadDialog(row, opts)
                 local_present = 1,
                 file_path = dst_or_err,
             })
-            M.refresh()
             local read_prompt = ConfirmBox:new{
                 text = _("File saved to:")
                     .. "\n" .. dst_or_err
@@ -859,7 +892,7 @@ local function showCloudDownloadDialog(row, opts)
                     ReaderUI:showReader(dst_or_err)
                 end,
             }
-            UIManager:nextTick(function()
+            refreshAfterDownload(function()
                 UIManager:show(read_prompt)
             end)
         end)
@@ -1045,8 +1078,9 @@ local function downloadBookOnly(row, opts, after_cb)
             hash = row.hash, title = row.title,
             local_present = 1, file_path = dst_or_err,
         })
-        M.refresh()
-        if after_cb then after_cb(true) end
+        refreshAfterDownload(function()
+            if after_cb then after_cb(true) end
+        end)
     end)
 end
 
