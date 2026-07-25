@@ -101,6 +101,24 @@ function M.should_skip_dir(name)
     return SKIP_DIRS[name] == true
 end
 
+local function normalize_dir(path)
+    if type(path) ~= "string" or path == "" then return nil end
+    return path:gsub("/+$", "")
+end
+
+function M.path_is_excluded(path, excluded_dirs)
+    path = normalize_dir(path)
+    if not path then return false end
+    for _, excluded in ipairs(excluded_dirs or {}) do
+        excluded = normalize_dir(excluded)
+        if excluded and (path == excluded
+                or path:sub(1, #excluded + 1) == excluded .. "/") then
+            return true
+        end
+    end
+    return false
+end
+
 -- ---------------------------------------------------------------------------
 -- lightScan(opts) — fast path; runs on every Library open
 -- ---------------------------------------------------------------------------
@@ -193,10 +211,48 @@ local BOOK_EXTS = {
     lit=true, pdb=true, lrf=true, kfx=true, zip=true,
 }
 
+function M.bookHashesInDir(root)
+    local lfs = require("libs/libkoreader-lfs")
+    local DocSettings = require("docsettings")
+    local hashes = {}
+    if not root or root == "" or lfs.attributes(root, "mode") ~= "directory" then
+        return hashes
+    end
+
+    local stack = { root }
+    while #stack > 0 do
+        local dir = table.remove(stack)
+        local ok_dir, iter, dir_obj = pcall(lfs.dir, dir)
+        if ok_dir then
+            for entry in iter, dir_obj do
+                if entry ~= "." and entry ~= ".." and not M.should_skip_dir(entry) then
+                    local full = dir .. "/" .. entry
+                    local mode = lfs.attributes(full, "mode")
+                    if mode == "directory" and not entry:match("%.sdr$") then
+                        stack[#stack + 1] = full
+                    elseif mode == "file" then
+                        local ext = entry:match("%.([^.]+)$")
+                        if ext and BOOK_EXTS[ext:lower()] then
+                            local ok, doc_settings = pcall(
+                                DocSettings.open, DocSettings, full)
+                            if ok and doc_settings then
+                                local hash = doc_settings:readSetting(
+                                    "partial_md5_checksum")
+                                if hash and hash ~= "" then hashes[hash] = true end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return hashes
+end
+
 -- ---------------------------------------------------------------------------
 -- dirScan(opts) — walk a directory tree and upsert every book that has a
 -- KOReader sidecar (meaning it's been opened and has a hash).
--- opts: { store = LibraryStore, dir = string }
+-- opts: { store = LibraryStore, dir = string, excluded_dirs = { string, ... } }
 -- ---------------------------------------------------------------------------
 function M.dirScan(opts)
     local lfs = require("libs/libkoreader-lfs")
@@ -210,7 +266,10 @@ function M.dirScan(opts)
     local stack = { root }
     while #stack > 0 do
         local dir = table.remove(stack)
-        local ok_dir, iter, dir_obj = pcall(lfs.dir, dir)
+        local ok_dir, iter, dir_obj
+        if not M.path_is_excluded(dir, opts.excluded_dirs) then
+            ok_dir, iter, dir_obj = pcall(lfs.dir, dir)
+        end
         if ok_dir then
             for entry in iter, dir_obj do
                 if entry ~= "." and entry ~= ".." and not M.should_skip_dir(entry) then

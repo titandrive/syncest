@@ -18,6 +18,15 @@ local function now_ms()
     return math.floor(os.time() * 1000)
 end
 
+local function path_is_in_dir(path, dir)
+    if type(path) ~= "string" or type(dir) ~= "string" or dir == "" then
+        return false
+    end
+    path = path:gsub("/+$", "")
+    dir = dir:gsub("/+$", "")
+    return path == dir or path:sub(1, #dir + 1) == dir .. "/"
+end
+
 local function safe_title_filename(title)
     local name = tostring(title or ""):gsub("^%s*(.-)%s*$", "%1")
     if name == "" then name = "Untitled" end
@@ -437,6 +446,20 @@ function M.pushChangedBooks(opts, cb)
 
     local since   = store:getLastPulledAt() or 0
     local changed = store:getChangedBooks(since)
+    local archive_dir = opts.settings and opts.settings.syncest_archive_dir
+    local archived_hashes = opts.settings and opts.settings.syncest_archived_hashes
+    if archive_dir or archived_hashes then
+        local filtered = {}
+        for _, row in ipairs(changed) do
+            if not path_is_in_dir(row.file_path, archive_dir)
+                    and not (archived_hashes and archived_hashes[row.hash]) then
+                filtered[#filtered + 1] = row
+            end
+        end
+        logger.info("WebDavSync pushChangedBooks: excluded "
+            .. tostring(#changed - #filtered) .. " archived row(s)")
+        changed = filtered
+    end
     logger.info("WebDavSync pushChangedBooks: since=" .. since .. " found=" .. #changed)
     if #changed == 0 then
         if cb then cb(false, "no books found to push — books may not have been opened in KOReader yet (no hash)") end

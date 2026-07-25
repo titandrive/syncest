@@ -3304,8 +3304,10 @@ function Syncest:touchOpenBook()
     return touched
 end
 
-function Syncest:_backgroundSyncBooksLibrary(mode, interactive)
+function Syncest:_backgroundSyncBooksLibrary(mode, interactive, archive_dir, archived_hashes)
     local settings = copy_settings(self.settings)
+    settings.syncest_archive_dir = archive_dir
+    settings.syncest_archived_hashes = archived_hashes
     local server = settings and settings.sync_server
     if type(server) ~= "table" or not settings.user_id or settings.user_id == "" then
         if interactive then
@@ -3437,8 +3439,22 @@ function Syncest:syncBooksLibrary(mode, interactive)
     if mode == "push" or mode == "both" then
         local localscanner = require("syncest_lib.localscanner")
         local home_dir = G_reader_settings:readSetting("home_dir") or "/sdcard/Books"
-        pcall(localscanner.dirScan, { store = store, dir = home_dir })
+        local DataStorage = require("datastorage")
+        local LuaSettings = require("luasettings")
+        local archive_settings = LuaSettings:open(
+            DataStorage:getSettingsDir() .. "/move_to_archive_settings.lua")
+        local archive_dir = archive_settings:readSetting("archive_dir")
+        local archived_hashes = archive_dir
+            and localscanner.bookHashesInDir(archive_dir) or nil
+        pcall(localscanner.dirScan, {
+            store = store,
+            dir = home_dir,
+            excluded_dirs = archive_dir and { archive_dir } or nil,
+        })
         self:touchOpenBook()
+        self:_backgroundSyncBooksLibrary(
+            mode, interactive, archive_dir, archived_hashes)
+        return
     end
     self:_backgroundSyncBooksLibrary(mode, interactive)
 end

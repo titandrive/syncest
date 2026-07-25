@@ -133,6 +133,8 @@ The main Syncest menu also includes:
 
 `Push all` and `Pull all` do not upload or download book files or the book catalog. Book library sync is kept separate on purpose.
 
+If an archive folder is configured, pushing the Syncest book library skips books inside it.
+
 Manual stats pushes and pulls reconcile the complete statistics history. Automatic stats sync uses an incremental cursor for efficiency.
 
 ## KOSync Mirroring
