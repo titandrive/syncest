@@ -27,6 +27,19 @@ local function path_is_in_dir(path, dir)
     return path == dir or path:sub(1, #dir + 1) == dir .. "/"
 end
 
+local function file_matches_hash(path, expected_hash)
+    if type(path) ~= "string" or path == ""
+            or type(expected_hash) ~= "string" or expected_hash == "" then
+        return false
+    end
+    local lfs = require("libs/libkoreader-lfs")
+    if lfs.attributes(path, "mode") ~= "file" then return false end
+    local ok_util, util = pcall(require, "util")
+    if not ok_util or not util or not util.partialMD5 then return false end
+    local ok_hash, actual_hash = pcall(util.partialMD5, path)
+    return ok_hash and actual_hash == expected_hash
+end
+
 local function safe_title_filename(title)
     local name = tostring(title or ""):gsub("^%s*(.-)%s*$", "%1")
     if name == "" then name = "Untitled" end
@@ -444,8 +457,21 @@ function M.pushChangedBooks(opts, cb)
         return
     end
 
-    local since   = store:getLastPulledAt() or 0
-    local changed = store:getChangedBooks(since)
+    local since = store:getLastPulledAt() or 0
+    local changed = opts.full_push
+        and store:listLocalBooks()
+        or store:getChangedBooks(since)
+    local lfs = require("libs/libkoreader-lfs")
+    if opts.full_push then
+        local existing_files = {}
+        for _, row in ipairs(changed) do
+            if row.file_path
+                    and lfs.attributes(row.file_path, "mode") == "file" then
+                existing_files[#existing_files + 1] = row
+            end
+        end
+        changed = existing_files
+    end
     local archive_dir = opts.settings and opts.settings.syncest_archive_dir
     local archived_hashes = opts.settings and opts.settings.syncest_archived_hashes
     if archive_dir or archived_hashes then
@@ -460,7 +486,8 @@ function M.pushChangedBooks(opts, cb)
             .. tostring(#changed - #filtered) .. " archived row(s)")
         changed = filtered
     end
-    logger.info("WebDavSync pushChangedBooks: since=" .. since .. " found=" .. #changed)
+    logger.info("WebDavSync pushChangedBooks: full=" .. tostring(opts.full_push == true)
+        .. " since=" .. since .. " found=" .. #changed)
     if #changed == 0 then
         if cb then cb(true, 0) end
         return
@@ -559,8 +586,22 @@ function M.syncBooks(opts, mode, cb, before_push)
     local logger = require("logger")
     logger.info("WebDavSync syncBooks: mode=" .. tostring(mode))
     if mode == "push" then
-        if before_push then before_push() end
-        M.pushChangedBooks(opts, cb)
+        if opts.full_push then
+            -- A manual full push first refreshes cloud_present flags, then
+            -- reconciles every eligible local row rather than relying on the
+            -- incremental watermark.
+            M.pullBooks(opts, function(pull_ok, pull_msg, pull_status)
+                if not pull_ok then
+                    if cb then cb(false, pull_msg, pull_status) end
+                    return
+                end
+                if before_push then before_push() end
+                M.pushChangedBooks(opts, cb)
+            end)
+        else
+            if before_push then before_push() end
+            M.pushChangedBooks(opts, cb)
+        end
     elseif mode == "pull" then
         M.pullBooks(opts, cb)
     else
@@ -660,7 +701,7 @@ function M.downloadBook(book, opts, cb)
     if not lfs.attributes(opts.download_dir, "mode") then
         lfs.mkdir(opts.download_dir)
     end
-    if book.file_path and lfs.attributes(book.file_path, "mode") == "file" then
+    if file_matches_hash(book.file_path, book.hash) then
         if cb then cb(true, book.file_path, nil, true) end
         return true, book.file_path, nil, true
     end
@@ -668,25 +709,9 @@ function M.downloadBook(book, opts, cb)
         return lfs.attributes(opts.download_dir .. "/" .. name, "mode") ~= nil
     end
     local candidate = opts.download_dir .. "/" .. local_name
-    if exists(local_name) then
-        local ok_ds, DocSettings = pcall(require, "docsettings")
-        if ok_ds and DocSettings then
-            local ok_open, doc_settings = pcall(
-                DocSettings.open, DocSettings, candidate)
-            local existing_hash = ok_open and doc_settings
-                and doc_settings:readSetting("partial_md5_checksum")
-            if not existing_hash then
-                local ok_util, util = pcall(require, "util")
-                if ok_util and util and util.partialMD5 then
-                    local ok_hash, calculated = pcall(util.partialMD5, candidate)
-                    if ok_hash then existing_hash = calculated end
-                end
-            end
-            if existing_hash == book.hash then
-                if cb then cb(true, candidate, nil, true) end
-                return true, candidate, nil, true
-            end
-        end
+    if exists(local_name) and file_matches_hash(candidate, book.hash) then
+        if cb then cb(true, candidate, nil, true) end
+        return true, candidate, nil, true
     end
     local dst = opts.download_dir .. "/" .. M.resolve_collision(local_name, exists)
 
@@ -709,7 +734,6 @@ end
 -- ---------------------------------------------------------------------------
 function M.downloadMissingBooks(opts, cb)
     local logger = require("logger")
-    local lfs = require("libs/libkoreader-lfs")
     local store = opts and opts.store
     local download_dir = opts and opts.download_dir
     if not store or not download_dir or download_dir == "" then
@@ -723,8 +747,7 @@ function M.downloadMissingBooks(opts, cb)
     local already_local = 0
     for _, row in ipairs(rows) do
         local local_file_exists = row.local_present == 1
-            and row.file_path
-            and lfs.attributes(row.file_path, "mode") == "file"
+            and file_matches_hash(row.file_path, row.hash)
         local is_cloud_book = row.cloud_present == 1
             or row.uploaded_at ~= nil
         if local_file_exists then
@@ -796,6 +819,19 @@ function M.downloadMissingBooks(opts, cb)
     -- catalog pull as failed.
     if cb then cb(true, summary) end
     return true, summary
+end
+
+function M.countMissingBooks(store)
+    if not store then return 0, 0 end
+    local missing, total = 0, 0
+    for _, row in ipairs(store:listBooks()) do
+        total = total + 1
+        if not (row.local_present == 1
+                and file_matches_hash(row.file_path, row.hash)) then
+            missing = missing + 1
+        end
+    end
+    return missing, total
 end
 
 -- ---------------------------------------------------------------------------

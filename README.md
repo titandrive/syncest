@@ -141,7 +141,7 @@ The main Syncest menu also includes:
 
 Selecting a cloud-only book in the Syncest Library opens download options for choosing the destination folder, changing the filename, and viewing book information. After downloading, Syncest asks whether to read the book immediately.
 
-`Push books now` scans the local library and uploads its catalog entries and book files. `Pull books now` refreshes the cloud catalog and downloads every cloud book that is not already present locally. Both operations match books by hash, so an existing copy is updated or skipped instead of duplicated. Opening the Syncest Library refreshes its cloud catalog but does not automatically download every book.
+`Push books now` refreshes the cloud catalog, scans the complete local library, and reconciles all eligible catalog entries and book files instead of relying on the incremental sync cursor. `Pull books now` shows the current missing-book count and destination folder for confirmation, then refreshes the cloud catalog and downloads every cloud book that is not already present locally. Both operations verify books by hash, so an existing copy is updated or skipped instead of duplicated. Opening the Syncest Library refreshes its cloud catalog but does not automatically download every book.
 
 If an archive folder is configured, pushing the Syncest book library skips books inside it.
 

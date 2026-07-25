@@ -418,6 +418,28 @@ function M:listBooks(filters)
     return rows
 end
 
+-- Return every non-deleted book whose file is indexed on this device.
+-- Unlike listBooks(), this intentionally ignores cloud visibility and is
+-- used by a manual full-library push.
+function M:listLocalBooks()
+    local stmt = self.db:prepare(string.format([[
+        SELECT %s FROM books
+        WHERE user_id = ?
+          AND deleted_at IS NULL
+          AND local_present = 1
+        ORDER BY hash ASC
+    ]], table.concat(BOOK_COLS, ", ")))
+    stmt:reset():bind1(1, self.user_id)
+    local rows = {}
+    while true do
+        local row = stmt:step()
+        if not row then break end
+        rows[#rows + 1] = row_to_table(row)
+    end
+    stmt:close()
+    return rows
+end
+
 -- ---------------------------------------------------------------------------
 -- getGroups
 -- ---------------------------------------------------------------------------

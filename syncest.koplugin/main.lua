@@ -3392,6 +3392,7 @@ function Syncest:_backgroundSyncBooksLibrary(
                 client = client,
                 settings = settings,
                 store = store,
+                full_push = mode == "push" and interactive,
                 on_upload_progress = function(progress)
                     write_background_json_result(progress_file, progress)
                 end,
@@ -3514,7 +3515,7 @@ function Syncest:_backgroundSyncBooksLibrary(
     return launched
 end
 
-function Syncest:syncBooksLibrary(mode, interactive)
+function Syncest:syncBooksLibrary(mode, interactive, confirmed)
     if WebDavAuth:needsSetup(self.settings) then
         if interactive then
             UIManager:show(InfoMessage:new{ text = _("Configure WebDAV sync first"), timeout = 2 })
@@ -3562,6 +3563,20 @@ function Syncest:syncBooksLibrary(mode, interactive)
                 or G_reader_settings:readSetting("download_dir")
                 or G_reader_settings:readSetting("home_dir")
                 or DataStorage:getDataDir()
+            if interactive and not confirmed then
+                local syncbooks = require("syncest_lib.syncbooks")
+                local missing, total = syncbooks.countMissingBooks(store)
+                UIManager:show(ConfirmBox:new{
+                    text = string.format(
+                        _("The current cloud catalog has %d of %d books missing locally.\n\nPull the latest catalog and download every missing book to:\n%s"),
+                        missing, total, download_dir),
+                    ok_text = _("Download books"),
+                    ok_callback = function()
+                        self:syncBooksLibrary(mode, interactive, true)
+                    end,
+                })
+                return
+            end
             self:_backgroundSyncBooksLibrary(
                 mode, interactive, archive_dir, archived_hashes, true, download_dir)
             return
