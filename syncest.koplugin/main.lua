@@ -394,7 +394,7 @@ function Syncest:_markProgressPayloadPushed(payload)
 end
 
 function Syncest:_notifyProgressPushResult(notify, success, unchanged)
-    if not notify then return end
+    if not notify or not self:_notificationEnabled("progress") then return end
     if notify == "chapter" then
         local text
         if not success then
@@ -728,7 +728,7 @@ function Syncest:_backgroundPushStats(notify, manual, retried)
     end, function(result)
         if result.empty then
             self:_clearPendingGlobal("stats")
-            if manual and notify then
+            if manual and notify and self:_notificationEnabled("stats") then
                 UIManager:show(Notification:new{
                     text = _("No new reading statistics to push."), timeout = 2,
                 })
@@ -802,7 +802,7 @@ function Syncest:_backgroundPullStats(notify, manual)
         if notify then
             if (tonumber(result.count) or 0) > 0 then
                 self:_autoNotify("stats", "pulled")
-            elseif manual then
+            elseif manual and self:_notificationEnabled("stats") then
                 UIManager:show(Notification:new{
                     text = _("No new reading statistics to pull."), timeout = 2,
                 })
@@ -1058,6 +1058,11 @@ Syncest.default_settings = {
     auto_sync_catalog        = true,
     check_updates            = true,
     connection_notifications = true,
+    progress_notifications   = true,
+    annotation_notifications = true,
+    stats_notifications      = true,
+    vocab_notifications      = true,
+    books_notifications      = true,
     mirror_to_kosync         = false,
     user_id      = nil,
     user_name    = nil,
@@ -1075,6 +1080,19 @@ function Syncest:_autoNotifyCompactAt()
         return 4
     end
     return 3
+end
+
+function Syncest:_notificationEnabled(kind)
+    local keys = {
+        progress = "progress_notifications",
+        annotations = "annotation_notifications",
+        stats = "stats_notifications",
+        vocab = "vocab_notifications",
+        books = "books_notifications",
+        connection = "connection_notifications",
+    }
+    local key = keys[kind]
+    return not key or self.settings[key] ~= false
 end
 
 function Syncest:_flushAutoNotify()
@@ -1098,7 +1116,7 @@ function Syncest:_flushAutoNotify()
     local mixed_actions = false
     for _, k in ipairs(order) do
         local action = self._notify_labels[k]
-        if action then
+        if action and self:_notificationEnabled(k) then
             parts[#parts + 1] = label_names[k] or k
             actions[#actions + 1] = action
             if not shared_action then
@@ -1153,6 +1171,7 @@ function Syncest:_beginAutoNotifyBatch(timeout, reset, action_filter, flush_dela
 end
 
 function Syncest:_autoNotify(label, action, delay)
+    if not self:_notificationEnabled(label) then return end
     if self._notify_action_filter then
         if type(self._notify_action_filter) == "table" then
             local allowed = false
@@ -1187,7 +1206,7 @@ function Syncest:_autoNotify(label, action, delay)
 end
 
 function Syncest:_showConnectionNotification(kind)
-    if self.settings.connection_notifications == false then return end
+    if not self:_notificationEnabled("connection") then return end
     local now = os.time()
     if self._last_connection_notification == kind
         and self._last_connection_notification_at
@@ -1205,6 +1224,7 @@ function Syncest:_showConnectionNotification(kind)
 end
 
 function Syncest:_showBooksSyncNotification(text, _timeout)
+    if not self:_notificationEnabled("books") then return end
     if self._books_sync_notification then
         pcall(function() UIManager:close(self._books_sync_notification) end)
         self._books_sync_notification = nil
@@ -2383,7 +2403,7 @@ function Syncest:updateMenuItems()
     local Updater = syncest_updater()
     return {
         {
-            text = _("Notify on wake when update available"),
+            text = _("Check for updates on wake"),
             checked_func = function()
                 return self.settings.check_updates ~= false
             end,
@@ -2438,18 +2458,6 @@ function Syncest:addToMainMenu(menu_items)
                                 return function(menu)
                                     WebDavAuth:setup(self.settings, menu)
                                 end
-                            end,
-                        },
-                        {
-                            text = _("Connection notifications"),
-                            checked_func = function()
-                                return self.settings.connection_notifications ~= false
-                            end,
-                            callback = function()
-                                self.settings.connection_notifications =
-                                    self.settings.connection_notifications == false
-                                G_reader_settings:saveSetting(
-                                    "webdav_sync", self.settings)
                             end,
                         },
                     }
@@ -2725,6 +2733,35 @@ function Syncest:addToMainMenu(menu_items)
                 },
             },
             {
+                text = _("Notifications"),
+                sub_item_table_func = function()
+                    local definitions = {
+                        { _("Progress"), "progress_notifications" },
+                        { _("Annotations"), "annotation_notifications" },
+                        { _("Stats"), "stats_notifications" },
+                        { _("Vocabulary"), "vocab_notifications" },
+                        { _("Books and library"), "books_notifications" },
+                        { _("Connection"), "connection_notifications" },
+                    }
+                    local notification_items = {}
+                    for _, definition in ipairs(definitions) do
+                        local label, key = definition[1], definition[2]
+                        notification_items[#notification_items + 1] = {
+                            text = label,
+                            checked_func = function()
+                                return self.settings[key] ~= false
+                            end,
+                            callback = function()
+                                self.settings[key] = self.settings[key] == false
+                                G_reader_settings:saveSetting(
+                                    "webdav_sync", self.settings)
+                            end,
+                        }
+                    end
+                    return notification_items
+                end,
+            },
+            {
                 text = _("Updates"),
                 sub_item_table_func = function()
                     return self:updateMenuItems()
@@ -2747,6 +2784,7 @@ function Syncest:addToMainMenu(menu_items)
                 enabled_func = function() return configured end,
                 callback = function() self:syncBooksLibrary("pull", true) end,
                 separator = true,
+                syncest_page_break_after = true,
             },
             -- ── Stats & Vocab ───────────────────────────────────────
             {
@@ -2807,9 +2845,10 @@ function Syncest:addToMainMenu(menu_items)
                     separator = true,
                 },
             }
-            -- Insert after the 4 settings items (Connection, Auto sync, Sync settings, Updates)
+            -- Insert after the 5 settings items (Connection, Auto sync,
+            -- Sync settings, Notifications, Updates).
             for i = #book_items, 1, -1 do
-                table.insert(items, 5, book_items[i])
+                table.insert(items, 6, book_items[i])
             end
             -- Sync info always at the very bottom
             items[#items].separator = true
@@ -2832,7 +2871,19 @@ function Syncest:addToMainMenu(menu_items)
                 },
             }
             for i = #annotation_items, 1, -1 do
-                table.insert(items, 5, annotation_items[i])
+                table.insert(items, 6, annotation_items[i])
+            end
+        end
+
+        -- TouchMenu paginates submenus by a fixed item count rather than
+        -- supporting explicit page-break entries. Use the final position of
+        -- Pull books now (after reader/file-manager items are inserted) as
+        -- this submenu's page size, keeping Stats and everything after it on
+        -- page two.
+        for i, item in ipairs(items) do
+            if item.syncest_page_break_after then
+                items.max_per_page = i
+                break
             end
         end
 
