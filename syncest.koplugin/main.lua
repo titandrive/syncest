@@ -3355,7 +3355,8 @@ function Syncest:touchOpenBook()
     return touched
 end
 
-function Syncest:_backgroundSyncBooksLibrary(mode, interactive, archive_dir, archived_hashes)
+function Syncest:_backgroundSyncBooksLibrary(
+        mode, interactive, archive_dir, archived_hashes, pull_files, download_dir)
     local settings = copy_settings(self.settings)
     settings.syncest_archive_dir = archive_dir
     settings.syncest_archived_hashes = archived_hashes
@@ -3399,18 +3400,36 @@ function Syncest:_backgroundSyncBooksLibrary(mode, interactive, archive_dir, arc
                 done_msg = msg
                 done_status = status
             end)
+            local download_summary
+            if done_success and pull_files then
+                local downloads_ok, summary, downloads_err =
+                    syncbooks.downloadMissingBooks({
+                        client = client,
+                        settings = settings,
+                        store = store,
+                        download_dir = download_dir,
+                        on_download_progress = function(progress)
+                            write_background_json_result(progress_file, progress)
+                        end,
+                    })
+                done_success = downloads_ok
+                done_msg = downloads_err or done_msg
+                download_summary = summary
+            end
             store:close()
             if not done_success then
                 return {
                     success = false,
                     message = done_msg or "books sync failed",
                     status = done_status,
+                    download_summary = download_summary,
                 }
             end
             local result = {
                 success = true,
                 message = done_msg,
                 status = done_status,
+                download_summary = download_summary,
             }
             if mode == "push" or mode == "both" then
                 result.catalog_last_pushed_at = os.time()
@@ -3423,15 +3442,35 @@ function Syncest:_backgroundSyncBooksLibrary(mode, interactive, archive_dir, arc
                 G_reader_settings:saveSetting("webdav_sync", self.settings)
             end
             if interactive then
-                self:_showBooksSyncNotification(
-                    (mode == "push" or mode == "both")
+                local text
+                if result.download_summary then
+                    local summary = result.download_summary
+                    local failed = tonumber(summary.failed) or 0
+                    if failed > 0 then
+                        text = string.format(
+                            _("Books download finished: %d downloaded, %d already local, %d failed"),
+                            tonumber(summary.downloaded) or 0,
+                            tonumber(summary.already_local) or 0,
+                            failed)
+                    else
+                        text = string.format(
+                            _("Books download finished: %d downloaded, %d already local"),
+                            tonumber(summary.downloaded) or 0,
+                            tonumber(summary.already_local) or 0)
+                    end
+                else
+                    text = (mode == "push" or mode == "both")
                         and _("Books upload finished")
-                        or _("Books sync finished"),
-                    8
-                )
+                        or _("Books sync finished")
+                end
+                self:_showBooksSyncNotification(text, 8)
             end
             local LibraryWidget = require("syncest_lib.librarywidget")
-            if LibraryWidget._menu then LibraryWidget.refresh() end
+            if result.download_summary then
+                LibraryWidget.refreshAfterDownload()
+            elseif LibraryWidget._menu then
+                LibraryWidget.refresh()
+            end
             os.remove(progress_file)
         end,
         function(message)
@@ -3454,16 +3493,19 @@ function Syncest:_backgroundSyncBooksLibrary(mode, interactive, archive_dir, arc
             local key = tostring(done) .. "/" .. tostring(total) .. "/" .. tostring(failed)
             if key == last_progress_key then return end
             last_progress_key = key
+            local verb = progress.phase == "download" and "downloading" or "uploading"
             local text = failed > 0
-                and string.format("Books uploading %d/%d (%d failed)", done, total, failed)
-                or string.format("Books uploading %d/%d", done, total)
+                and string.format("Books %s %d/%d (%d failed)", verb, done, total, failed)
+                or string.format("Books %s %d/%d", verb, done, total)
             self:_showBooksSyncNotification(text, 60)
         end
     )
 
     if launched and interactive then
         self:_showBooksSyncNotification(
-            (mode == "push" or mode == "both")
+            pull_files
+                and _("Books download started")
+                or (mode == "push" or mode == "both")
                 and _("Books upload started")
                 or _("Books sync started"),
             60
@@ -3486,22 +3528,44 @@ function Syncest:syncBooksLibrary(mode, interactive)
         end
         return
     end
-    -- Scan all books in the home directory before pushing.
-    if mode == "push" or mode == "both" then
-        local localscanner = require("syncest_lib.localscanner")
-        local home_dir = G_reader_settings:readSetting("home_dir") or "/sdcard/Books"
-        local DataStorage = require("datastorage")
-        local LuaSettings = require("luasettings")
-        local archive_settings = LuaSettings:open(
-            DataStorage:getSettingsDir() .. "/move_to_archive_settings.lua")
-        local archive_dir = archive_settings:readSetting("archive_dir")
+    local localscanner = require("syncest_lib.localscanner")
+    local home_dir = G_reader_settings:readSetting("home_dir") or "/sdcard/Books"
+    local DataStorage = require("datastorage")
+    local LuaSettings = require("luasettings")
+    local archive_settings = LuaSettings:open(
+        DataStorage:getSettingsDir() .. "/move_to_archive_settings.lua")
+    local archive_dir = archive_settings:readSetting("archive_dir")
+
+    -- Scan all books before a bulk transfer. Pull computes hashes for unopened
+    -- local files too, so a matching cloud book is skipped instead of being
+    -- downloaded under a collision filename.
+    if mode == "push" or mode == "both" or mode == "pull" then
         local archived_hashes = archive_dir
             and localscanner.bookHashesInDir(archive_dir) or nil
         pcall(localscanner.dirScan, {
             store = store,
             dir = home_dir,
-            excluded_dirs = archive_dir and { archive_dir } or nil,
+            excluded_dirs = (mode == "push" or mode == "both")
+                and archive_dir and { archive_dir } or nil,
+            compute_hashes = mode == "pull",
         })
+        if mode == "pull" and archive_dir and archive_dir ~= home_dir
+                and not localscanner.path_is_excluded(archive_dir, { home_dir }) then
+            pcall(localscanner.dirScan, {
+                store = store,
+                dir = archive_dir,
+                compute_hashes = true,
+            })
+        end
+        if mode == "pull" then
+            local download_dir = self.settings.library_download_dir
+                or G_reader_settings:readSetting("download_dir")
+                or G_reader_settings:readSetting("home_dir")
+                or DataStorage:getDataDir()
+            self:_backgroundSyncBooksLibrary(
+                mode, interactive, archive_dir, archived_hashes, true, download_dir)
+            return
+        end
         self:touchOpenBook()
         self:_backgroundSyncBooksLibrary(
             mode, interactive, archive_dir, archived_hashes)

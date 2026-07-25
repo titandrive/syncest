@@ -462,7 +462,7 @@ function M.pushChangedBooks(opts, cb)
     end
     logger.info("WebDavSync pushChangedBooks: since=" .. since .. " found=" .. #changed)
     if #changed == 0 then
-        if cb then cb(false, "no books found to push — books may not have been opened in KOReader yet (no hash)") end
+        if cb then cb(true, 0) end
         return
     end
 
@@ -487,9 +487,11 @@ function M.pushChangedBooks(opts, cb)
             local DataStorage = require("datastorage")
             local covers_dir = DataStorage:getSettingsDir() .. "/syncest_covers"
             local uploaded, failed = 0, 0
+            local uploaded_at = {}
             local total_uploads = 0
             for _, row in ipairs(changed) do
-                if row.file_path and row.format then
+                if row.file_path and row.format
+                        and row.cloud_present ~= 1 and not row.uploaded_at then
                     total_uploads = total_uploads + 1
                 end
             end
@@ -502,7 +504,8 @@ function M.pushChangedBooks(opts, cb)
                 })
             end
             for _, row in ipairs(changed) do
-                if row.file_path and row.format then
+                if row.file_path and row.format
+                        and row.cloud_present ~= 1 and not row.uploaded_at then
                     logger.info("WebDavSync pushChangedBooks: upload candidate hash="
                         .. tostring(row.hash) .. " format=" .. tostring(row.format))
                     local call_ok, up_ok, err_up = pcall(M.uploadBook, row, {
@@ -512,8 +515,7 @@ function M.pushChangedBooks(opts, cb)
                     }, nil)
                     if call_ok and up_ok then
                         uploaded = uploaded + 1
-                        -- Set uploadedAt so the cloud library shows the file is available
-                        row_to_wire(row).uploadedAt = os.time() * 1000
+                        uploaded_at[row.hash] = os.time() * 1000
                     else
                         failed = failed + 1
                         logger.warn("Syncest uploadBook failed: " .. tostring(err_up))
@@ -534,7 +536,15 @@ function M.pushChangedBooks(opts, cb)
 
             -- Mark pushed rows as cloud_present so they appear in the library view.
             for _, row in ipairs(changed) do
-                store:upsertBook({ hash = row.hash, title = row.title, cloud_present = 1 })
+                local is_cloud = row.cloud_present == 1
+                    or row.uploaded_at ~= nil
+                    or uploaded_at[row.hash] ~= nil
+                store:upsertBook({
+                    hash = row.hash,
+                    title = row.title,
+                    cloud_present = is_cloud and 1 or 0,
+                    uploaded_at = uploaded_at[row.hash],
+                })
             end
             store:setLastPulledAt(max_ts)
             if cb then cb(true, #books_wire) end
@@ -650,8 +660,33 @@ function M.downloadBook(book, opts, cb)
     if not lfs.attributes(opts.download_dir, "mode") then
         lfs.mkdir(opts.download_dir)
     end
+    if book.file_path and lfs.attributes(book.file_path, "mode") == "file" then
+        if cb then cb(true, book.file_path, nil, true) end
+        return true, book.file_path, nil, true
+    end
     local exists = function(name)
         return lfs.attributes(opts.download_dir .. "/" .. name, "mode") ~= nil
+    end
+    local candidate = opts.download_dir .. "/" .. local_name
+    if exists(local_name) then
+        local ok_ds, DocSettings = pcall(require, "docsettings")
+        if ok_ds and DocSettings then
+            local ok_open, doc_settings = pcall(
+                DocSettings.open, DocSettings, candidate)
+            local existing_hash = ok_open and doc_settings
+                and doc_settings:readSetting("partial_md5_checksum")
+            if not existing_hash then
+                local ok_util, util = pcall(require, "util")
+                if ok_util and util and util.partialMD5 then
+                    local ok_hash, calculated = pcall(util.partialMD5, candidate)
+                    if ok_hash then existing_hash = calculated end
+                end
+            end
+            if existing_hash == book.hash then
+                if cb then cb(true, candidate, nil, true) end
+                return true, candidate, nil, true
+            end
+        end
     end
     local dst = opts.download_dir .. "/" .. M.resolve_collision(local_name, exists)
 
@@ -661,12 +696,106 @@ function M.downloadBook(book, opts, cb)
     end)
     if code == 200 then
         if cb then cb(true, dst) end
-        return true, dst
+        return true, dst, nil, false
     else
         os.remove(dst)
         if cb then cb(false, err or "download failed", code) end
         return false, err or "download failed", code
     end
+end
+
+-- ---------------------------------------------------------------------------
+-- downloadMissingBooks — download every cloud-library book not on device
+-- ---------------------------------------------------------------------------
+function M.downloadMissingBooks(opts, cb)
+    local logger = require("logger")
+    local lfs = require("libs/libkoreader-lfs")
+    local store = opts and opts.store
+    local download_dir = opts and opts.download_dir
+    if not store or not download_dir or download_dir == "" then
+        local err = not store and "missing store" or "missing download directory"
+        if cb then cb(false, nil, err) end
+        return false, nil, err
+    end
+
+    local rows = store:listBooks()
+    local candidates = {}
+    local already_local = 0
+    for _, row in ipairs(rows) do
+        local local_file_exists = row.local_present == 1
+            and row.file_path
+            and lfs.attributes(row.file_path, "mode") == "file"
+        local is_cloud_book = row.cloud_present == 1
+            or row.uploaded_at ~= nil
+        if local_file_exists then
+            already_local = already_local + 1
+        elseif is_cloud_book then
+            candidates[#candidates + 1] = row
+        end
+    end
+
+    local downloaded, failed, processed = 0, 0, 0
+    if opts.on_download_progress then
+        opts.on_download_progress({
+            phase = "download",
+            downloaded = downloaded,
+            failed = failed,
+            done = 0,
+            total = #candidates,
+            already_local = already_local,
+        })
+    end
+
+    for _, row in ipairs(candidates) do
+        local success, dst_or_err, _, was_existing = M.downloadBook(row, {
+            client = opts.client,
+            settings = opts.settings,
+            download_dir = download_dir,
+        })
+        if success then
+            if was_existing then
+                already_local = already_local + 1
+            else
+                downloaded = downloaded + 1
+            end
+            store:upsertBook({
+                hash = row.hash,
+                title = row.title,
+                local_present = 1,
+                file_path = dst_or_err,
+            })
+        else
+            failed = failed + 1
+            logger.warn("Syncest downloadMissingBooks failed for "
+                .. tostring(row.hash) .. ": " .. tostring(dst_or_err))
+        end
+        processed = processed + 1
+        if opts.on_download_progress then
+            opts.on_download_progress({
+                phase = "download",
+                downloaded = downloaded,
+                failed = failed,
+                done = processed,
+                total = #candidates,
+                already_local = already_local,
+                title = row.title,
+                hash = row.hash,
+            })
+        end
+    end
+
+    local summary = {
+        downloaded = downloaded,
+        failed = failed,
+        already_local = already_local,
+        total = #rows,
+    }
+    -- Reaching the end means the bulk pull itself completed. Individual
+    -- failures remain in the summary so the caller can report a partial
+    -- result without discarding successful downloads or treating the entire
+    -- catalog pull as failed.
+    if cb then cb(true, summary) end
+    return true, summary
 end
 
 -- ---------------------------------------------------------------------------

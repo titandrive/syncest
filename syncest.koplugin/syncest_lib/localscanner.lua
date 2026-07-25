@@ -26,6 +26,21 @@ local function encode_metadata(metadata)
     return ok and encoded or nil
 end
 
+local function local_row_updated_at(store, row, now_ms)
+    local existing = store and store:_getRowRaw(row.hash)
+    if not existing then return now_ms end
+    local fields = {
+        "title", "author", "format", "metadata_json", "file_path",
+        "local_present",
+    }
+    for _, field in ipairs(fields) do
+        if row[field] ~= nil and row[field] ~= existing[field] then
+            return now_ms
+        end
+    end
+    return existing.updated_at
+end
+
 -- ---------------------------------------------------------------------------
 -- sidecar_to_book_path
 -- ---------------------------------------------------------------------------
@@ -175,7 +190,7 @@ function M.lightScan(opts)
                 end
                 local doc_props = doc_settings:readSetting("doc_props") or {}
                 local now_ms = os.time() * 1000
-                store:upsertBook({
+                local local_row = {
                     hash         = hash,
                     title        = doc_props.title
                                        or file:match("([^/]+)%.[^.]+$")
@@ -186,9 +201,11 @@ function M.lightScan(opts)
                     file_path    = file,
                     local_present = 1,
                     last_read_at = item.time and (item.time * 1000) or nil,
-                    updated_at   = now_ms,
                     created_at   = now_ms,
-                })
+                }
+                local_row.updated_at = local_row_updated_at(
+                    store, local_row, now_ms)
+                store:upsertBook(local_row)
                 added = added + 1
             end)
             if not ok then
@@ -252,11 +269,17 @@ end
 -- ---------------------------------------------------------------------------
 -- dirScan(opts) — walk a directory tree and upsert every book that has a
 -- KOReader sidecar (meaning it's been opened and has a hash).
--- opts: { store = LibraryStore, dir = string, excluded_dirs = { string, ... } }
+-- opts: {
+--   store = LibraryStore,
+--   dir = string,
+--   excluded_dirs = { string, ... },
+--   compute_hashes = boolean, -- identify unopened files for bulk-pull dedupe
+-- }
 -- ---------------------------------------------------------------------------
 function M.dirScan(opts)
     local lfs = require("libs/libkoreader-lfs")
     local DocSettings = require("docsettings")
+    local util = opts.compute_hashes and require("util") or nil
     local store = opts.store
     local root  = opts.dir
     if not store or not root or root == "" then return 0 end
@@ -283,10 +306,16 @@ function M.dirScan(opts)
                             local ok_b, err = pcall(function()
                                 local ds = DocSettings:open(full)
                                 local hash = ds:readSetting("partial_md5_checksum")
+                                if (not hash or hash == "") and util then
+                                    local ok_hash, computed = pcall(util.partialMD5, full)
+                                    if ok_hash and computed and computed ~= "" then
+                                        hash = computed
+                                    end
+                                end
                                 if not hash or hash == "" then return end
                                 local doc_props = ds:readSetting("doc_props") or {}
                                 local now_ms = os.time() * 1000
-                                store:upsertBook({
+                                local local_row = {
                                     hash          = hash,
                                     title         = doc_props.title
                                                         or entry:match("^(.+)%.[^.]+$")
@@ -296,9 +325,11 @@ function M.dirScan(opts)
                                     metadata_json = encode_metadata(doc_props),
                                     file_path     = full,
                                     local_present = 1,
-                                    updated_at    = now_ms,
                                     created_at    = now_ms,
-                                })
+                                }
+                                local_row.updated_at = local_row_updated_at(
+                                    store, local_row, now_ms)
+                                store:upsertBook(local_row)
                                 added = added + 1
                             end)
                             if not ok_b then

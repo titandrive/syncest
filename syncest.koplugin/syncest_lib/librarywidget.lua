@@ -774,7 +774,7 @@ end
 -- after the UI stack has processed that close. Merely rebuilding our own
 -- item table leaves KOReader's cached File Manager/History views stale until
 -- they are manually refreshed or the application is restarted.
-local function refreshAfterDownload(callback)
+function M.refreshAfterDownload(callback)
     UIManager:nextTick(function()
         M.refresh()
         if M._menu then
@@ -892,7 +892,7 @@ local function showCloudDownloadDialog(row, opts)
                     ReaderUI:showReader(dst_or_err)
                 end,
             }
-            refreshAfterDownload(function()
+            M.refreshAfterDownload(function()
                 UIManager:show(read_prompt)
             end)
         end)
@@ -1078,7 +1078,7 @@ local function downloadBookOnly(row, opts, after_cb)
             hash = row.hash, title = row.title,
             local_present = 1, file_path = dst_or_err,
         })
-        refreshAfterDownload(function()
+        M.refreshAfterDownload(function()
             if after_cb then after_cb(true) end
         end)
     end)

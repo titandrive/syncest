@@ -134,12 +134,14 @@ The main Syncest menu also includes:
 
 - Push/pull stats.
 - Push/pull vocab.
-- Push/pull the Syncest book library.
+- Push/pull the Syncest book library and book files.
 - Push all / Pull all for progress, annotations, stats, and vocab.
 
 `Push all` and `Pull all` do not upload or download book files or the book catalog. Book library sync is kept separate on purpose.
 
 Selecting a cloud-only book in the Syncest Library opens download options for choosing the destination folder, changing the filename, and viewing book information. After downloading, Syncest asks whether to read the book immediately.
+
+`Push books now` scans the local library and uploads its catalog entries and book files. `Pull books now` refreshes the cloud catalog and downloads every cloud book that is not already present locally. Both operations match books by hash, so an existing copy is updated or skipped instead of duplicated. Opening the Syncest Library refreshes its cloud catalog but does not automatically download every book.
 
 If an archive folder is configured, pushing the Syncest book library skips books inside it.
 
