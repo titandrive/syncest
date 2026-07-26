@@ -30,6 +30,10 @@ local LAYOUT_KEYS = {
 local function set(opts, key, value)
     opts.settings[key] = value
     G_reader_settings:saveSetting("webdav_sync", opts.settings)
+    -- Layout choices should survive an abrupt app stop or crash. KOReader
+    -- normally flushes global settings during a clean shutdown, but the
+    -- Library can be reopened (or the process killed) before that happens.
+    G_reader_settings:flush()
     if LAYOUT_KEYS[key] and opts.on_layout_change then
         opts.on_layout_change()
     elseif opts.on_change then

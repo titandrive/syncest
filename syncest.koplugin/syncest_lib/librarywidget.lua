@@ -190,6 +190,16 @@ local SORT_VALUE_FOR_BOOK = {
 
 local function build_item_table(store, settings, search)
     local group_by = active_group_by(settings)
+    local function add_search_back(items)
+        if search and search ~= "" then
+            table.insert(items, 1, {
+                text = "↩ " .. _("Library"),
+                mandatory = "",
+                _readest_clear_search = true,
+            })
+        end
+        return items
+    end
 
     if not group_by then
         local rows = store:listBooks(get_filters(settings, search))
@@ -197,7 +207,7 @@ local function build_item_table(store, settings, search)
         for i, row in ipairs(rows) do
             items[i] = libraryitem.entry_from_row(row)
         end
-        return items
+        return add_search_back(items)
     end
 
     local parent_path = M._group_path
@@ -257,7 +267,7 @@ local function build_item_table(store, settings, search)
     for _i, m in ipairs(merged) do
         items[#items + 1] = m.entry
     end
-    return items
+    return add_search_back(items)
 end
 
 -- ---------------------------------------------------------------------------
@@ -983,6 +993,12 @@ end
 -- ---------------------------------------------------------------------------
 function M.handleTap(item, opts)
     if not item then return end
+
+    if item._readest_clear_search then
+        M._search = nil
+        M.refresh()
+        return
+    end
 
     -- Group folder entry → drill in
     if item._readest_group then
