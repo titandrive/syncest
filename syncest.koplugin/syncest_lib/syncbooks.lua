@@ -539,11 +539,11 @@ function M.pushChangedBooks(opts, cb)
             local uploaded_at = {}
             local total_uploads = 0
             for _, row in ipairs(changed) do
-                -- A manual full push really uploads every eligible local
-                -- file, producing one progress step per book. Incremental
-                -- pushes only upload files that lack uploaded_at.
+                -- The full catalog is reconciled above, but book bytes only
+                -- need uploading when the pulled catalog lacks the row or
+                -- does not report a completed file upload.
                 if row.file_path and row.format
-                        and (opts.full_push or not row.uploaded_at) then
+                        and (row.cloud_present ~= 1 or not row.uploaded_at) then
                     total_uploads = total_uploads + 1
                 end
             end
@@ -557,7 +557,7 @@ function M.pushChangedBooks(opts, cb)
             end
             for _, row in ipairs(changed) do
                 if row.file_path and row.format
-                        and (opts.full_push or not row.uploaded_at) then
+                        and (row.cloud_present ~= 1 or not row.uploaded_at) then
                     logger.info("WebDavSync pushChangedBooks: upload candidate hash="
                         .. tostring(row.hash) .. " format=" .. tostring(row.format))
                     local call_ok, up_ok, err_up = pcall(M.uploadBook, row, {
