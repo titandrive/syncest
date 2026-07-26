@@ -193,13 +193,12 @@ end
 -- upsertBook
 -- ---------------------------------------------------------------------------
 -- Merges a row by (user_id, hash). Flags `cloud_present` and `local_present`
--- are OR-merged with the existing row UNLESS the caller passes the
--- `_force_cloud_present` sentinel, in which case the supplied value is
--- written verbatim (used for cloud-tombstone updates that must clear the
--- flag).
+-- are OR-merged with the existing row unless the caller passes the matching
+-- force sentinel, in which case the supplied value is written verbatim.
 --
 -- Sentinels:
 --   _force_cloud_present = true → caller's cloud_present overrides OR-merge.
+--   _force_local_present = true → caller's local_present overrides OR-merge.
 --   _clear_fields = { "deleted_at", ... } → after the preserve-existing pass,
 --     these columns are explicitly nulled. Lets a caller un-tombstone a row
 --     by passing nil (which would otherwise be indistinguishable from "not
@@ -227,10 +226,13 @@ function M:upsertBook(row)
         else
             merged.cloud_present = tonumber(row.cloud_present) or 0
         end
-        -- OR-merge local_present always (no use case for force-clearing yet)
-        merged.local_present = math.max(
-            tonumber(existing.local_present) or 0,
-            tonumber(merged.local_present) or 0)
+        if not row._force_local_present then
+            merged.local_present = math.max(
+                tonumber(existing.local_present) or 0,
+                tonumber(merged.local_present) or 0)
+        else
+            merged.local_present = tonumber(row.local_present) or 0
+        end
         -- Preserve fields the caller didn't provide
         for k in pairs(BOOK_COL_INDEX) do
             if merged[k] == nil and existing[k] ~= nil then

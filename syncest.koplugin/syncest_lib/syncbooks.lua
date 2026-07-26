@@ -462,6 +462,37 @@ function M.pushChangedBooks(opts, cb)
         and store:listLocalBooks()
         or store:getChangedBooks(since)
     local lfs = require("libs/libkoreader-lfs")
+    local archive_dir = opts.settings and opts.settings.syncest_archive_dir
+    local archived_hashes = opts.settings and opts.settings.syncest_archived_hashes
+    local archived_paths = opts.settings and opts.settings.syncest_archived_paths
+    local function is_archived(row)
+        return path_is_in_dir(row.file_path, archive_dir)
+            or (archived_paths and archived_paths[row.file_path]) == true
+            or (archived_hashes and archived_hashes[row.hash]) == true
+    end
+    local archived_tombstones = {}
+    if archive_dir or archived_hashes or archived_paths then
+        local filtered = {}
+        for _, row in ipairs(changed) do
+            if is_archived(row) then
+                if opts.full_push then
+                    local tombstone = {}
+                    for key, value in pairs(row) do tombstone[key] = value end
+                    local deleted_at = now_ms()
+                    tombstone.deleted_at = deleted_at
+                    tombstone.updated_at = math.max(
+                        tonumber(tombstone.updated_at) or 0, deleted_at)
+                    archived_tombstones[#archived_tombstones + 1] = tombstone
+                end
+            else
+                filtered[#filtered + 1] = row
+            end
+        end
+        logger.info("WebDavSync pushChangedBooks: excluded "
+            .. tostring(#changed - #filtered) .. " archived row(s); tombstones="
+            .. tostring(#archived_tombstones))
+        changed = filtered
+    end
     if opts.full_push then
         local existing_files = {}
         for _, row in ipairs(changed) do
@@ -472,23 +503,9 @@ function M.pushChangedBooks(opts, cb)
         end
         changed = existing_files
     end
-    local archive_dir = opts.settings and opts.settings.syncest_archive_dir
-    local archived_hashes = opts.settings and opts.settings.syncest_archived_hashes
-    if archive_dir or archived_hashes then
-        local filtered = {}
-        for _, row in ipairs(changed) do
-            if not path_is_in_dir(row.file_path, archive_dir)
-                    and not (archived_hashes and archived_hashes[row.hash]) then
-                filtered[#filtered + 1] = row
-            end
-        end
-        logger.info("WebDavSync pushChangedBooks: excluded "
-            .. tostring(#changed - #filtered) .. " archived row(s)")
-        changed = filtered
-    end
     logger.info("WebDavSync pushChangedBooks: full=" .. tostring(opts.full_push == true)
         .. " since=" .. since .. " found=" .. #changed)
-    if #changed == 0 then
+    if #changed == 0 and #archived_tombstones == 0 then
         if cb then cb(true, 0) end
         return
     end
@@ -497,6 +514,11 @@ function M.pushChangedBooks(opts, cb)
     local max_ts = since
     for i, row in ipairs(changed) do
         books_wire[i] = row_to_wire(row)
+        if row.updated_at and row.updated_at > max_ts then max_ts = row.updated_at end
+        if row.deleted_at and row.deleted_at > max_ts then max_ts = row.deleted_at end
+    end
+    for _, row in ipairs(archived_tombstones) do
+        books_wire[#books_wire + 1] = row_to_wire(row)
         if row.updated_at and row.updated_at > max_ts then max_ts = row.updated_at end
         if row.deleted_at and row.deleted_at > max_ts then max_ts = row.deleted_at end
     end
@@ -517,8 +539,11 @@ function M.pushChangedBooks(opts, cb)
             local uploaded_at = {}
             local total_uploads = 0
             for _, row in ipairs(changed) do
+                -- A manual full push really uploads every eligible local
+                -- file, producing one progress step per book. Incremental
+                -- pushes only upload files that lack uploaded_at.
                 if row.file_path and row.format
-                        and row.cloud_present ~= 1 and not row.uploaded_at then
+                        and (opts.full_push or not row.uploaded_at) then
                     total_uploads = total_uploads + 1
                 end
             end
@@ -532,7 +557,7 @@ function M.pushChangedBooks(opts, cb)
             end
             for _, row in ipairs(changed) do
                 if row.file_path and row.format
-                        and row.cloud_present ~= 1 and not row.uploaded_at then
+                        and (opts.full_push or not row.uploaded_at) then
                     logger.info("WebDavSync pushChangedBooks: upload candidate hash="
                         .. tostring(row.hash) .. " format=" .. tostring(row.format))
                     local call_ok, up_ok, err_up = pcall(M.uploadBook, row, {
@@ -561,7 +586,9 @@ function M.pushChangedBooks(opts, cb)
             end
             logger.info("Syncest pushChangedBooks: uploaded=" .. uploaded .. " failed=" .. failed)
 
-            -- Mark pushed rows as cloud_present so they appear in the library view.
+            -- File uploads happen after the first metadata push. Publish
+            -- successful uploadedAt values before reporting completion.
+            local uploaded_wire = {}
             for _, row in ipairs(changed) do
                 local is_cloud = row.cloud_present == 1
                     or row.uploaded_at ~= nil
@@ -572,9 +599,52 @@ function M.pushChangedBooks(opts, cb)
                     cloud_present = is_cloud and 1 or 0,
                     uploaded_at = uploaded_at[row.hash],
                 })
+                if uploaded_at[row.hash] then
+                    local uploaded_row = {}
+                    for key, value in pairs(row) do uploaded_row[key] = value end
+                    uploaded_row.uploaded_at = uploaded_at[row.hash]
+                    uploaded_row.updated_at = math.max(
+                        tonumber(uploaded_row.updated_at) or 0,
+                        uploaded_at[row.hash])
+                    uploaded_wire[#uploaded_wire + 1] = row_to_wire(uploaded_row)
+                end
             end
-            store:setLastPulledAt(max_ts)
-            if cb then cb(true, #books_wire) end
+            for _, row in ipairs(archived_tombstones) do
+                store:upsertBook({
+                    hash                 = row.hash,
+                    title                = row.title,
+                    cloud_present        = 0,
+                    deleted_at           = row.deleted_at,
+                    updated_at           = row.updated_at,
+                    _force_cloud_present = true,
+                })
+            end
+            local function finish()
+                if failed > 0 then
+                    if cb then
+                        cb(false, tostring(failed) .. " book file upload(s) failed")
+                    end
+                    return
+                end
+                store:setLastPulledAt(max_ts)
+                if cb then cb(true, #books_wire) end
+            end
+            if #uploaded_wire > 0 then
+                client:pushChanges(
+                    {books = uploaded_wire, notes = {}, configs = {}},
+                    function(upload_meta_ok, _, upload_meta_status)
+                        if not upload_meta_ok then
+                            if cb then
+                                cb(false, "uploaded book metadata push failed (HTTP "
+                                    .. tostring(upload_meta_status) .. ")")
+                            end
+                            return
+                        end
+                        finish()
+                    end)
+            else
+                finish()
+            end
         end)
 end
 
@@ -650,14 +720,24 @@ function M.pullBooks(opts, cb)
         for _, raw in ipairs(rows) do
             local parsed = LibraryStore.parseSyncRow(raw)
             if parsed then
+                local remote_deleted_at = parsed.deleted_at
+                local existing = store:_getRowRaw(parsed.hash)
+                -- A cloud-only removal must not hide/delete a retained local
+                -- copy. Keep the tombstone's cloud absence while preserving
+                -- the local row as an uploadable device-only book.
+                if remote_deleted_at and existing
+                        and tonumber(existing.local_present) == 1 then
+                    parsed.deleted_at = nil
+                    parsed._clear_fields = { "deleted_at" }
+                end
                 parsed.user_id = opts.settings.user_id
                 store:upsertBook(parsed)
                 upserted = upserted + 1
                 if parsed.updated_at and parsed.updated_at > max_ts then
                     max_ts = parsed.updated_at
                 end
-                if parsed.deleted_at and parsed.deleted_at > max_ts then
-                    max_ts = parsed.deleted_at
+                if remote_deleted_at and remote_deleted_at > max_ts then
+                    max_ts = remote_deleted_at
                 end
             end
         end
@@ -969,11 +1049,6 @@ end
 function M.deleteCloudFiles(book, opts, cb)
     local logger = require("logger")
     local _, url, user, pass = webdav(opts)
-
-    if not server_reachable(opts) then
-        if cb then cb(false, "unreachable") end
-        return false, "unreachable"
-    end
 
     if not book or not book.hash then
         if cb then cb(false, "missing book") end

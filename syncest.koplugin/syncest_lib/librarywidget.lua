@@ -1121,10 +1121,11 @@ local function removeLocalFile(row)
     -- Reset local presence in the store; cloud_present stays as-is so
     -- the row remains visible (and re-downloadable) if it's in the cloud.
     M._store:upsertBook({
-        hash          = row.hash,
-        title         = row.title,
-        local_present = 0,
-        file_path     = nil,
+        hash                 = row.hash,
+        title                = row.title,
+        local_present        = 0,
+        _force_local_present = true,
+        _clear_fields        = { "file_path" },
     })
     return true
 end
@@ -1157,11 +1158,9 @@ function M.handleHold(item, opts)
         rows[#rows + 1] = {{ text = text, callback = cb }}
     end
 
-    -- Cloud delete shared by "Cloud & Device" and "Cloud Only". Mirrors
-    -- Readest's cloudService.deleteBook 'cloud' branch: list /storage,
-    -- delete each file, clear cloud_present in the store. For Cloud &
-    -- Device the caller also pushes a tombstone via /sync so peers
-    -- consider the book gone (peers pulling /sync see deleted_at).
+    -- Cloud delete shared by "Cloud & Device" and "Cloud Only". Removing
+    -- WebDAV objects must always be followed by a catalog tombstone;
+    -- otherwise the next pull resurrects the row.
     local function doCloudDelete(after_cb)
         local progress = InfoMessage:new{
             text = _("Removing from cloud…") .. " " .. (row.title or ""),
@@ -1184,6 +1183,20 @@ function M.handleHold(item, opts)
         end)
     end
 
+    local function pushCloudTombstone(after_cb)
+        local now = math.floor(os.time() * 1000)
+        local tombstone = {}
+        for k, v in pairs(row) do tombstone[k] = v end
+        tombstone.deleted_at = now
+        tombstone.updated_at = now
+        syncbooks.pushBook(tombstone, {
+            client = opts.client,
+            settings = opts.settings,
+        }, function(success)
+            if after_cb then after_cb(success == true, now) end
+        end)
+    end
+
     -- Delete sub-options (parity with BookDetailView's three-item dropdown).
     add_row(_("Remove from Cloud & Device"), function()
         close()
@@ -1194,32 +1207,25 @@ function M.handleHold(item, opts)
             ok_callback = function()
                 local function finish_local()
                     if on_local then removeLocalFile(row) end
-                    -- Tombstone push: matches Readest's `book.deletedAt =
-                    -- Date.now() + pushLibrary()` for the 'both' delete.
-                    -- Peers pulling /sync see deleted_at and stop showing
-                    -- the row, even though we already removed our local
-                    -- copy + cloud objects.
-                    local now = math.floor(os.time() * 1000)
-                    M._store:upsertBook({
-                        hash                  = row.hash,
-                        title                 = row.title,
-                        cloud_present         = 0,
-                        local_present         = 0,
-                        deleted_at            = now,
-                        _force_cloud_present  = true,
-                    })
-                    -- Build a tombstone wire row from the in-memory entry
-                    -- row (which already has format/meta_hash/etc) plus
-                    -- the deleted_at + bumped updated_at.
-                    local tombstone = {}
-                    for k, v in pairs(row) do tombstone[k] = v end
-                    tombstone.deleted_at = now
-                    tombstone.updated_at = now
-                    syncbooks.pushBook(tombstone, {
-                        client    = opts.client,
-                        settings  = opts.settings,
-                    }, function() M.refresh() end)
-                    M.refresh()
+                    pushCloudTombstone(function(success, now)
+                        if success then
+                            M._store:upsertBook({
+                                hash                 = row.hash,
+                                title                = row.title,
+                                cloud_present        = 0,
+                                local_present        = 0,
+                                deleted_at           = now,
+                                updated_at           = now,
+                                _force_cloud_present = true,
+                            })
+                            M.refresh()
+                        else
+                            UIManager:show(InfoMessage:new{
+                                text = _("Cloud catalog removal failed."),
+                                timeout = 3,
+                            })
+                        end
+                    end)
                 end
                 if on_cloud then
                     doCloudDelete(function() finish_local() end)
@@ -1239,15 +1245,25 @@ function M.handleHold(item, opts)
                 ok_callback = function()
                     doCloudDelete(function(success)
                         if success then
-                            -- Cloud objects gone; clear cloud_present but
-                            -- leave the row visible if local_present=1.
-                            M._store:upsertBook({
-                                hash                 = row.hash,
-                                title                = row.title,
-                                cloud_present        = 0,
-                                _force_cloud_present = true,
-                            })
-                            M.refresh()
+                            pushCloudTombstone(function(pushed, now)
+                                if pushed then
+                                    M._store:upsertBook({
+                                        hash                 = row.hash,
+                                        title                = row.title,
+                                        cloud_present        = 0,
+                                        local_present        = row.local_present,
+                                        updated_at           = now,
+                                        _force_cloud_present = true,
+                                        _clear_fields        = { "deleted_at" },
+                                    })
+                                    M.refresh()
+                                else
+                                    UIManager:show(InfoMessage:new{
+                                        text = _("Cloud catalog removal failed."),
+                                        timeout = 3,
+                                    })
+                                end
+                            end)
                         end
                     end)
                 end,

@@ -3356,10 +3356,12 @@ function Syncest:touchOpenBook()
 end
 
 function Syncest:_backgroundSyncBooksLibrary(
-        mode, interactive, archive_dir, archived_hashes, pull_files, download_dir)
+        mode, interactive, archive_dir, archived_hashes, archived_paths,
+        pull_files, download_dir)
     local settings = copy_settings(self.settings)
     settings.syncest_archive_dir = archive_dir
     settings.syncest_archived_hashes = archived_hashes
+    settings.syncest_archived_paths = archived_paths
     local server = settings and settings.sync_server
     if type(server) ~= "table" or not settings.user_id or settings.user_id == "" then
         if interactive then
@@ -3536,6 +3538,8 @@ function Syncest:syncBooksLibrary(mode, interactive, confirmed)
     local archive_settings = LuaSettings:open(
         DataStorage:getSettingsDir() .. "/move_to_archive_settings.lua")
     local archive_dir = archive_settings:readSetting("archive_dir")
+    local archive_original_dirs =
+        archive_settings:readSetting("library_archive_original_dirs") or {}
 
     -- Scan all books before a bulk transfer. Pull computes hashes for unopened
     -- local files too, so a matching cloud book is skipped instead of being
@@ -3543,6 +3547,17 @@ function Syncest:syncBooksLibrary(mode, interactive, confirmed)
     if mode == "push" or mode == "both" or mode == "pull" then
         local archived_hashes = archive_dir
             and localscanner.bookHashesInDir(archive_dir) or nil
+        -- KOReader records archived-file -> original-directory. Include both
+        -- paths because our SQLite row may still contain the pre-move path.
+        local archived_paths = {}
+        for archived_path, original_dir in pairs(archive_original_dirs) do
+            archived_paths[archived_path:gsub("/+$", "")] = true
+            local filename = archived_path:match("([^/]+)$")
+            if filename and type(original_dir) == "string" then
+                archived_paths[original_dir:gsub("/+$", "")
+                    .. "/" .. filename] = true
+            end
+        end
         pcall(localscanner.dirScan, {
             store = store,
             dir = home_dir,
@@ -3578,12 +3593,13 @@ function Syncest:syncBooksLibrary(mode, interactive, confirmed)
                 return
             end
             self:_backgroundSyncBooksLibrary(
-                mode, interactive, archive_dir, archived_hashes, true, download_dir)
+                mode, interactive, archive_dir, archived_hashes, archived_paths,
+                true, download_dir)
             return
         end
         self:touchOpenBook()
         self:_backgroundSyncBooksLibrary(
-            mode, interactive, archive_dir, archived_hashes)
+            mode, interactive, archive_dir, archived_hashes, archived_paths)
         return
     end
     self:_backgroundSyncBooksLibrary(mode, interactive)
