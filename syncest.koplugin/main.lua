@@ -1802,6 +1802,11 @@ function Syncest:onReaderReady()
     if self.settings.auto_sync and not WebDavAuth:needsSetup(self.settings) then
         if STARTUP_AUTO_PULL_PROGRESS_ENABLED
                 and self.settings.auto_pull_progress ~= false then
+            -- A closing Reader instance persists progress work because it
+            -- cannot safely wait for a subprocess. When the same book is
+            -- immediately restored on startup, its book-open pull is the
+            -- authority; do not race that pull with the stale close marker.
+            self:_clearPendingBook("progress", self:getBookIdentifiers())
             self._auto_pull_progress_task = function()
                 self._auto_pull_progress_task = nil
                 self:_runSafely("auto pull progress", function()
@@ -2666,13 +2671,6 @@ function Syncest:addToMainMenu(menu_items)
                         enabled_func = function() return false end,
                     },
                     {
-                        text = _("Progress history"),
-                        enabled_func = function()
-                            return configured and self.ui.document ~= nil
-                        end,
-                        callback = function() self:showProgressHistory() end,
-                    },
-                    {
                         text_func = function()
                             return T(_("Progress history entries: %1"),
                                 tostring(self.settings.progress_history_count or 25))
@@ -3033,6 +3031,11 @@ function Syncest:addToMainMenu(menu_items)
 
         if in_book then
             local book_items = {
+                {
+                    text = _("Progress history"),
+                    enabled_func = function() return configured end,
+                    callback = function() self:showProgressHistory() end,
+                },
                 {
                     text = _("Push reading progress now"),
                     enabled_func = function() return configured end,
@@ -4143,8 +4146,11 @@ function Syncest:onPageUpdate(page)
 
     if self.settings.push_every_x_pages == true then
         local interval = self.settings.push_page_interval or 1
-        if self._last_pushed_page == nil
-                or math.abs(page - self._last_pushed_page) >= interval then
+        if self._last_pushed_page == nil then
+            -- ReaderReady's initial page notification establishes the
+            -- baseline. It is not a page turn and must not push on book open.
+            self._last_pushed_page = page
+        elseif math.abs(page - self._last_pushed_page) >= interval then
             self._last_pushed_page = page
             should_push = true
         end
