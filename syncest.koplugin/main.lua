@@ -3158,6 +3158,10 @@ end
 function Syncest:_showProgressHistoryEntries(entries)
     local filter = self.settings.progress_history_filter or "both"
     local count = math.max(1, tonumber(self.settings.progress_history_count) or 25)
+    local metadata = SyncConfig:getMetadataHashInfo(self.ui)
+    local book_title = metadata.title ~= "" and metadata.title or _("Unknown title")
+    local book_author = #metadata.authors > 0
+        and table.concat(metadata.authors, ", ") or _("Unknown author")
     local labels = {
         both = _("Automatic and manual"),
         auto = _("Automatic only"),
@@ -3194,7 +3198,10 @@ function Syncest:_showProgressHistoryEntries(entries)
 
     local menu
     menu = Menu:new{
-        title = T(_("Progress history — last %1"), tostring(count)),
+        title = _("Progress history") .. "\n" .. book_title,
+        subtitle = book_author,
+        title_multilines = true,
+        title_shrink_font_to_fit = true,
         is_borderless = true,
         is_popout = false,
         item_table = item_table,
