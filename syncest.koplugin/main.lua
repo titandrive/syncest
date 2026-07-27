@@ -1256,18 +1256,11 @@ function Syncest:_savePendingPushes()
     G_reader_settings:saveSetting("webdav_sync", self.settings)
 end
 
-function Syncest:_armPendingPushConnectivity()
-    NetworkMgr:willRerunWhenOnline(function()
-        self:_schedulePendingPushFlush(0.1)
-    end)
-end
-
 function Syncest:_markPendingGlobal(kind)
     local pending = self:_pendingPushes()
     if pending[kind] == true then return end
     pending[kind] = true
     self:_savePendingPushes()
-    self:_armPendingPushConnectivity()
 end
 
 function Syncest:_markPendingBook(kind, path, hash)
@@ -1284,7 +1277,6 @@ function Syncest:_markPendingBook(kind, path, hash)
     book[kind] = true
     pending.books[key] = book
     self:_savePendingPushes()
-    self:_armPendingPushConnectivity()
 end
 
 function Syncest:_clearPendingGlobal(kind)
@@ -2397,6 +2389,10 @@ function Syncest:onLeaveStandby()
     if not self:_pullProgressOnResume() then
         self:backgroundUpdateCheck()
     end
+end
+
+function Syncest:onNetworkConnected()
+    self:_schedulePendingPushFlush(0.1)
 end
 
 function Syncest:updateMenuItems()
@@ -3724,12 +3720,23 @@ function Syncest:onCloseDocument()
     else
         push_annotations = push_annotations ~= false
     end
-    self:_pushAutoSyncBundle("onCloseDocument", {
-        progress = self.settings.auto_push_progress_close ~= false,
-        stats = self.settings.auto_push_stats ~= false,
-        vocab = self.settings.auto_push_vocab ~= false,
-        annotations = push_annotations,
-    })
+    if not self.settings.auto_sync or WebDavAuth:needsSetup(self.settings) then return end
+
+    -- The Reader plugin instance is destroyed immediately after this hook.
+    -- Persist close-time work for the next live instance instead of launching
+    -- subprocesses whose poll callbacks would retain this closing instance.
+    if self.settings.auto_push_progress_close ~= false then
+        self:_markPendingBook("progress")
+    end
+    if self.settings.auto_push_stats ~= false then
+        self:_markPendingGlobal("stats")
+    end
+    if self.settings.auto_push_vocab ~= false and self._vocab_dirty then
+        self:_markPendingGlobal("vocab")
+    end
+    if push_annotations then
+        self:_markPendingBook("annotations")
+    end
 end
 
 function Syncest:onSuspend()
