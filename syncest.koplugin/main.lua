@@ -1761,6 +1761,89 @@ local function readest_format_for_ext(ext)
     return ext and _readest_format_for_ext[ext:lower()]
 end
 
+local zen_wrapped_file_choosers = setmetatable({}, { __mode = "k" })
+
+function Syncest:registerZenFileDialogSubmenu(file_manager)
+    if not rawget(_G, "__ZEN_UI_REGISTER_HOME_ITEM") then return end
+    local file_chooser = file_manager and file_manager.file_chooser
+    if not file_chooser or zen_wrapped_file_choosers[file_chooser]
+            == file_chooser.showFileDialog then
+        return
+    end
+
+    local plugin = self
+    local original_showFileDialog = file_chooser.showFileDialog
+    if type(original_showFileDialog) ~= "function" then return end
+
+    local function wrapped_showFileDialog(self_fc, item, ...)
+        if type(item) == "table" and item.is_file and item.path then
+            local ext = item.path:match("%.([^./\\]+)$")
+            if readest_format_for_ext(ext) then
+                local extra = type(item._zen_extra_buttons) == "table"
+                    and item._zen_extra_buttons or {}
+                for i = #extra, 1, -1 do
+                    if extra[i]._syncest_submenu_row then table.remove(extra, i) end
+                end
+
+                local row = {{
+                    text = "\u{F04E6}  " .. _("Syncest") .. "  \u{25B8}",
+                    align = "left",
+                    callback = function()
+                        if self_fc.file_dialog then
+                            UIManager:close(self_fc.file_dialog)
+                        end
+                        UIManager:nextTick(function()
+                            local ButtonDialog = require("ui/widget/buttondialog")
+                            local submenu
+                            local enabled = not WebDavAuth:needsSetup(plugin.settings)
+                            local function action(icon, label, callback)
+                                return {{
+                                    text = icon .. "  " .. label,
+                                    align = "left",
+                                    enabled = enabled,
+                                    callback = function()
+                                        UIManager:close(submenu)
+                                        callback()
+                                    end,
+                                }}
+                            end
+                            submenu = ButtonDialog:new{
+                                title = _("Syncest"),
+                                title_align = "center",
+                                buttons = {
+                                    action("\u{F067}", _("Add to library"), function()
+                                        plugin:addToLibrary(item.path)
+                                    end),
+                                    action("\u{F0CE2}", _("Push progress"), function()
+                                        plugin:pushFileProgress(item.path, true)
+                                    end),
+                                    action("\u{F0CDC}", _("Pull progress"), function()
+                                        plugin:pullFileProgress(item.path, true)
+                                    end),
+                                    action("\u{F0CE2}", _("Push annotations"), function()
+                                        plugin:pushFileAnnotations(item.path, true)
+                                    end),
+                                    action("\u{F0CDC}", _("Pull annotations"), function()
+                                        plugin:pullFileAnnotations(item.path, true)
+                                    end),
+                                },
+                            }
+                            UIManager:show(submenu)
+                        end)
+                    end,
+                }}
+                row._syncest_submenu_row = true
+                table.insert(extra, row)
+                item._zen_extra_buttons = extra
+            end
+        end
+        return original_showFileDialog(self_fc, item, ...)
+    end
+
+    file_chooser.showFileDialog = wrapped_showFileDialog
+    zen_wrapped_file_choosers[file_chooser] = wrapped_showFileDialog
+end
+
 function Syncest:registerFileDialogButton()
     local plugin = self
     UIManager:scheduleIn(0, function()
@@ -1806,6 +1889,17 @@ function Syncest:registerFileDialogButton()
                     end,
                 }}
             end)
+        plugin:registerZenFileDialogSubmenu(FileManager.instance)
+    end)
+end
+
+function Syncest:onZenUIReady()
+    local plugin = self
+    UIManager:scheduleIn(0, function()
+        local ok_FM, FileManager = pcall(require, "apps/filemanager/filemanager")
+        if ok_FM then
+            plugin:registerZenFileDialogSubmenu(FileManager.instance)
+        end
     end)
 end
 
