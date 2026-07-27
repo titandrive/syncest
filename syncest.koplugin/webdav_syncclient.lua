@@ -625,6 +625,9 @@ end
 --   library.json              — book catalog (wire-format rows)
 --   sync/{book_hash}/
 --     progress.json           — {configs: [...], readingStatus?, readingStatusUpdatedAt?}
+--     progress-history/
+--       devices.json          — {deviceIds: [...]}
+--       {device_id}.json      — {version, deviceId, deviceName, entries: [...]}
 --     annotations.json        — {notes: [...]}
 --   stats.json                — {statBooks: [...], statPages: [...]}
 --   vocab.json                — {words: [...]}
@@ -700,6 +703,98 @@ function WebDavSyncClient:pullChanges(params, callback)
     end
 end
 
+local function progress_history_path(book_hash, suffix)
+    return "sync/" .. tostring(book_hash) .. "/progress-history/" .. suffix
+end
+
+function WebDavSyncClient:_appendProgressHistory(book_hash, history)
+    if not book_hash or type(history) ~= "table"
+            or not history.deviceId or type(history.entry) ~= "table" then
+        return false
+    end
+
+    local device_id = tostring(history.deviceId):gsub("[^%w_.%-]", "_")
+    if device_id == "" then return false end
+    local base = "sync/" .. tostring(book_hash) .. "/progress-history"
+    if not (self:_ensureFolder("sync")
+            and self:_ensureFolder("sync/" .. tostring(book_hash))
+            and self:_ensureFolder(base)) then
+        return false
+    end
+
+    local device_path = progress_history_path(book_hash, device_id .. ".json")
+    local remote, read_status = self:_readJSON(device_path)
+    if remote == nil and read_status ~= READ_MISSING then return false end
+    remote = remote or {}
+    local entries = type(remote.entries) == "table" and remote.entries or {}
+    local entry_id = tostring(history.entry.id or "")
+    local found = false
+    for _, existing in ipairs(entries) do
+        if entry_id ~= "" and tostring(existing.id or "") == entry_id then
+            found = true
+            break
+        end
+    end
+    if not found then entries[#entries + 1] = history.entry end
+    table.sort(entries, function(a, b)
+        return (tonumber(a.timestamp) or 0) > (tonumber(b.timestamp) or 0)
+    end)
+    local limit = math.max(1, tonumber(history.limit) or 100)
+    while #entries > limit do table.remove(entries) end
+    if not self:_writeJSON(device_path, {
+        version = 1,
+        deviceId = device_id,
+        deviceName = history.deviceName,
+        entries = entries,
+    }) then
+        return false
+    end
+
+    -- The small registry lets clients discover device-owned files without
+    -- depending on WebDAV directory-listing behavior, which varies by server.
+    local registry_path = progress_history_path(book_hash, "devices.json")
+    local registry, registry_status = self:_readJSON(registry_path)
+    if registry == nil and registry_status ~= READ_MISSING then return true end
+    registry = registry or {}
+    local device_ids = type(registry.deviceIds) == "table"
+        and registry.deviceIds or {}
+    local registered = false
+    for _, existing_id in ipairs(device_ids) do
+        if tostring(existing_id) == device_id then registered = true break end
+    end
+    if registered then return true end
+    device_ids[#device_ids + 1] = device_id
+    table.sort(device_ids)
+    self:_writeJSON(registry_path, {version = 1, deviceIds = device_ids})
+    return true
+end
+
+function WebDavSyncClient:pullProgressHistory(book_hash)
+    local registry, status = self:_readJSON(
+        progress_history_path(book_hash, "devices.json"))
+    if registry == nil then
+        return status == READ_MISSING and {} or nil
+    end
+    local combined = {}
+    for _, device_id in ipairs(registry.deviceIds or {}) do
+        local device = self:_readJSON(progress_history_path(
+            book_hash, tostring(device_id) .. ".json"))
+        if type(device) == "table" then
+            for _, entry in ipairs(device.entries or {}) do
+                if type(entry) == "table" then
+                    entry.deviceId = entry.deviceId or device.deviceId or device_id
+                    entry.deviceName = entry.deviceName or device.deviceName
+                    combined[#combined + 1] = entry
+                end
+            end
+        end
+    end
+    table.sort(combined, function(a, b)
+        return (tonumber(a.timestamp) or 0) > (tonumber(b.timestamp) or 0)
+    end)
+    return combined
+end
+
 function WebDavSyncClient:pushChanges(changes, callback)
     logger.info("WebDavSyncClient pushChanges: configs="
         .. tostring(changes.configs and #changes.configs or 0)
@@ -738,6 +833,16 @@ function WebDavSyncClient:pushChanges(changes, callback)
                     end
                 else
                     ok = false
+                end
+            end
+            if ok and changes.progressHistory then
+                local history_ok = self:_appendProgressHistory(
+                    book_hash, changes.progressHistory)
+                if not history_ok then
+                    -- History is a recovery aid. Never turn a successful
+                    -- latest-position sync into a failure if its companion
+                    -- history write is unavailable.
+                    logger.warn("WebDavSyncClient pushChanges: progress history write failed")
                 end
             end
         end

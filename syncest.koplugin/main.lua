@@ -3,6 +3,7 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local Notification = require("ui/widget/notification")
 local KeyValuePage = require("ui/widget/keyvaluepage")
+local Menu = require("ui/widget/menu")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
@@ -39,6 +40,63 @@ local RESUME_PROGRESS_PULL_DEBOUNCE = 5
 local RESUME_PROGRESS_INITIAL_DELAY = 0.5
 local RESUME_PROGRESS_RETRY_DELAYS = { 2, 5 }
 local APP_SUSPEND_PUSH_DEBOUNCE = 10
+local PROGRESS_HISTORY_RETENTION = 25
+
+local function progress_history_device_id(settings)
+    if settings.progress_history_device_id
+            and settings.progress_history_device_id ~= "" then
+        return settings.progress_history_device_id
+    end
+    local raw = table.concat({
+        tostring(os.time()),
+        tostring(math.random(100000, 999999)),
+    }, "-")
+    settings.progress_history_device_id = raw
+    return raw
+end
+
+local function progress_history_device_name(settings)
+    if settings.progress_history_device_name
+            and settings.progress_history_device_name ~= "" then
+        return settings.progress_history_device_name
+    end
+    local name = "KOReader"
+    if Device and Device.getModel then
+        local ok, model = pcall(Device.getModel, Device)
+        if ok and model and tostring(model) ~= "" then name = tostring(model) end
+    end
+    return name
+end
+
+local function add_progress_history(payload, settings, source, reason)
+    local config = payload and payload.configs and payload.configs[1]
+    if type(config) ~= "table" then return payload end
+    local timestamp = tonumber(config.updatedAt) or os.time() * 1000
+    local device_id = progress_history_device_id(settings)
+    local resolved_source = source == "manual" and "manual" or "auto"
+    local progress = type(config.progress) == "table" and config.progress or {}
+    local location_key = tostring(config.currentPage or progress[1]
+        or config.xpointer or ""):gsub("[^%w_.%-]", "_")
+    payload.progressHistory = {
+        deviceId = device_id,
+        deviceName = progress_history_device_name(settings),
+        limit = tonumber(settings.progress_history_retention)
+            or PROGRESS_HISTORY_RETENTION,
+        entry = {
+            id = table.concat({
+                device_id,
+                tostring(timestamp),
+                resolved_source,
+                location_key,
+            }, "-"),
+            timestamp = timestamp,
+            source = resolved_source,
+            reason = reason,
+            config = config,
+        },
+    }
+    return payload
+end
 
 local function write_background_result(path, success, message)
     local file = io.open(path, "w")
@@ -418,7 +476,11 @@ end
 function Syncest:_backgroundPushProgress(payload, notify)
     local config = payload and payload.configs and payload.configs[1]
     local book_hash = config and config.bookHash
-    if self:_progressPayloadAlreadyPushed(payload) then
+    local history_entry = payload and payload.progressHistory
+        and payload.progressHistory.entry
+    local manual_history = history_entry
+        and history_entry.source == "manual"
+    if self:_progressPayloadAlreadyPushed(payload) and not manual_history then
         logger.info("Syncest background progress push: unchanged, skipped")
         self:_clearPendingBook("progress", book_hash)
         self:_notifyProgressPushResult(notify, true, true)
@@ -995,7 +1057,7 @@ function Syncest:_backgroundPullAnnotations(book_hash, full_sync, notify, doc_pa
         failure_fn)
 end
 
-function Syncest:pushBookConfigAsync(notify)
+function Syncest:pushBookConfigAsync(notify, history_source, history_reason)
     logger.info("Syncest pushBookConfigAsync: notify=" .. tostring(notify))
     local config = SyncConfig:getCurrentBookConfig(self.ui)
     if not config then return end
@@ -1004,10 +1066,13 @@ function Syncest:pushBookConfigAsync(notify)
         notes = {},
         configs = { config },
     })
+    add_progress_history(payload, self.settings, history_source, history_reason)
     local already_pushed = self:_progressPayloadAlreadyPushed(payload)
     self:_markPendingBook("progress", nil, config.bookHash)
     if NetworkMgr:willRerunWhenOnline(
-            function() self:pushBookConfigAsync(notify) end) then
+            function()
+                self:pushBookConfigAsync(notify, history_source, history_reason)
+            end) then
         return
     end
     local launched = self:_backgroundPushProgress(payload, notify)
@@ -1064,6 +1129,9 @@ Syncest.default_settings = {
     vocab_notifications      = true,
     books_notifications      = true,
     mirror_to_kosync         = false,
+    progress_history_filter  = "both",
+    progress_history_count   = 25,
+    progress_history_retention = PROGRESS_HISTORY_RETENTION,
     user_id      = nil,
     user_name    = nil,
     last_sync_at = nil,
@@ -1606,6 +1674,22 @@ function Syncest:init()
     self._last_pushed_page = nil
     self._last_observed_page = nil
     self.settings = G_reader_settings:readSetting("webdav_sync", self.default_settings)
+    local progress_history_settings_changed = false
+    if self.settings.progress_history_retention ~= PROGRESS_HISTORY_RETENTION then
+        self.settings.progress_history_retention = PROGRESS_HISTORY_RETENTION
+        progress_history_settings_changed = true
+    end
+    if (tonumber(self.settings.progress_history_count) or 25) > 25 then
+        self.settings.progress_history_count = 25
+        progress_history_settings_changed = true
+    end
+    if not self.settings.progress_history_device_id then
+        progress_history_device_id(self.settings)
+        progress_history_settings_changed = true
+    end
+    if progress_history_settings_changed then
+        G_reader_settings:saveSetting("webdav_sync", self.settings)
+    end
     if not self.settings.progress_push_mode_migrated then
         if self.settings.auto_push_progress ~= false then
             self.settings.push_every_x_pages = true
@@ -1692,6 +1776,9 @@ function Syncest:onDispatcherRegisterReaderActions()
     Dispatcher:registerAction("syncest_toggle_autosync",
         { category="none", event="SyncestToggleAutoSync",
           title=_("Syncest: Toggle auto Syncest sync"), reader=true })
+    Dispatcher:registerAction("syncest_open_progress_history",
+        { category="none", event="SyncestOpenProgressHistory",
+          title=_("Syncest: Open progress history"), reader=true })
     Dispatcher:registerAction("syncest_push_progress",
         { category="none", event="SyncestPushProgress",
           title=_("Syncest: Push progress to Syncest"), reader=true })
@@ -2579,6 +2666,39 @@ function Syncest:addToMainMenu(menu_items)
                         enabled_func = function() return false end,
                     },
                     {
+                        text = _("Progress history"),
+                        enabled_func = function()
+                            return configured and self.ui.document ~= nil
+                        end,
+                        callback = function() self:showProgressHistory() end,
+                    },
+                    {
+                        text_func = function()
+                            return T(_("Progress history entries: %1"),
+                                tostring(self.settings.progress_history_count or 25))
+                        end,
+                        sub_item_table_func = function()
+                            local choices = {}
+                            for _, count in ipairs({10, 25}) do
+                                local selected_count = count
+                                choices[#choices + 1] = {
+                                    text = tostring(selected_count),
+                                    checked_func = function()
+                                        return (self.settings.progress_history_count or 25)
+                                            == selected_count
+                                    end,
+                                    callback = function()
+                                        self.settings.progress_history_count =
+                                            selected_count
+                                        G_reader_settings:saveSetting(
+                                            "webdav_sync", self.settings)
+                                    end,
+                                }
+                            end
+                            return choices
+                        end,
+                    },
+                    {
                         text_func = function()
                             local n = self.settings.push_page_interval or 1
                             if n == 1 then
@@ -2916,7 +3036,9 @@ function Syncest:addToMainMenu(menu_items)
                 {
                     text = _("Push reading progress now"),
                     enabled_func = function() return configured end,
-                    callback = function() self:pushBookConfigAsync(true) end,
+                    callback = function()
+                        self:pushBookConfigAsync(true, "manual", "manual")
+                    end,
                 },
                 {
                     text = _("Pull reading progress now"),
@@ -3014,6 +3136,132 @@ function Syncest:getBookIdentifiers()
     return SyncConfig:getDocumentIdentifier(self.ui)
 end
 
+local function progress_history_location_text(config)
+    if type(config) ~= "table" then return _("Unknown location") end
+    local current = tonumber(config.currentPage)
+        or (type(config.progress) == "table" and tonumber(config.progress[1]))
+    local total = tonumber(config.pageCount)
+        or (type(config.progress) == "table" and tonumber(config.progress[2]))
+    if current and total and total > 0 then
+        return T(_("Page %1 of %2"), tostring(current), tostring(total))
+    end
+    local percent = tonumber(config.progressPercent)
+    if percent then
+        return string.format(_("%.1f%%"), percent * 100)
+    end
+    return _("Saved location")
+end
+
+function Syncest:_showProgressHistoryEntries(entries)
+    local filter = self.settings.progress_history_filter or "both"
+    local count = math.max(1, tonumber(self.settings.progress_history_count) or 25)
+    local labels = {
+        both = _("Automatic and manual"),
+        auto = _("Automatic only"),
+        manual = _("Manual only"),
+    }
+    local item_table = {{
+        text = _("Show") .. ": " .. (labels[filter] or labels.both),
+        _history_filter = true,
+    }}
+    local shown = 0
+    for history_index, entry in ipairs(entries or {}) do
+        if shown >= count then break end
+        if filter == "both" or entry.source == filter then
+            shown = shown + 1
+            local timestamp = tonumber(entry.timestamp) or 0
+            if timestamp > 100000000000 then timestamp = math.floor(timestamp / 1000) end
+            local source = entry.source == "manual" and _("Manual") or _("Automatic")
+            local device = entry.deviceName or entry.deviceId or _("Unknown device")
+            item_table[#item_table + 1] = {
+                text = os.date("%Y-%m-%d %H:%M", timestamp)
+                    .. " · " .. source
+                    .. " · " .. progress_history_location_text(entry.config)
+                    .. " · " .. tostring(device),
+                _history_entry = entry,
+            }
+        end
+    end
+    if shown == 0 then
+        item_table[#item_table + 1] = {
+            text = _("No matching progress history"),
+            dim = true,
+        }
+    end
+
+    local menu
+    menu = Menu:new{
+        title = T(_("Progress history — last %1"), tostring(count)),
+        is_borderless = true,
+        is_popout = false,
+        item_table = item_table,
+        width = Device.screen:getWidth(),
+        height = Device.screen:getHeight(),
+        onMenuSelect = function(_menu, item)
+            if item._history_filter then
+                local next_filter = filter == "both" and "auto"
+                    or (filter == "auto" and "manual" or "both")
+                self.settings.progress_history_filter = next_filter
+                G_reader_settings:saveSetting("webdav_sync", self.settings)
+                UIManager:close(menu)
+                self:_showProgressHistoryEntries(entries)
+                return
+            end
+            local entry = item._history_entry
+            if not entry or type(entry.config) ~= "table" then return end
+            UIManager:show(ConfirmBox:new{
+                text = _("Go to this saved reading position?")
+                    .. "\n\n" .. progress_history_location_text(entry.config),
+                ok_text = _("Go"),
+                cancel_text = _("Cancel"),
+                ok_callback = function()
+                    if self.ui and self.ui.document then
+                        SyncConfig:applyBookConfig(self.ui, entry.config, true)
+                        UIManager:close(menu)
+                    end
+                end,
+            })
+        end,
+    }
+    UIManager:show(menu)
+end
+
+function Syncest:showProgressHistory()
+    local book_hash = self:getBookIdentifiers()
+    local server = self.settings and self.settings.sync_server
+    if not book_hash or type(server) ~= "table" then
+        UIManager:show(InfoMessage:new{
+            text = _("Open a book and configure WebDAV first."), timeout = 2,
+        })
+        return
+    end
+    UIManager:show(InfoMessage:new{
+        text = _("Loading progress history…"), timeout = 1,
+    })
+    self:_runBackgroundJSON(
+        "background progress history pull",
+        "syncest_progress_history",
+        function()
+            local Client = require("webdav_syncclient")
+            local client = Client:new{ server = server }
+            local entries = client:pullProgressHistory(book_hash)
+            if entries == nil then
+                return {success = false, message = "history read failed"}
+            end
+            return {success = true, entries = entries}
+        end,
+        function(result)
+            if self:getBookIdentifiers() == book_hash then
+                self:_showProgressHistoryEntries(result.entries or {})
+            end
+        end,
+        function()
+            UIManager:show(InfoMessage:new{
+                text = _("Could not load progress history."), timeout = 3,
+            })
+        end)
+end
+
 function Syncest:showSyncInfo()
     if not self.ui.document then
         UIManager:show(InfoMessage:new{ text = _("No book is open"), timeout = 2 })
@@ -3069,7 +3317,9 @@ function Syncest:pushBookConfig(interactive, notify)
         return
     end
     if not interactive then
-        self:pushBookConfigAsync(notify)
+        self:pushBookConfigAsync(notify,
+            interactive and "manual" or "auto",
+            interactive and "manual" or nil)
         return
     end
     local client = self:ensureClient(interactive)
@@ -3259,7 +3509,8 @@ function Syncest:pushAll(interactive)
         self:_beginAutoNotifyBatch(20, true, "pushed")
         local in_book = self.ui and self.ui.document
         if in_book then
-            self:pushBookConfigAsync(true)
+            self:pushBookConfigAsync(
+                true, interactive and "manual" or "auto", "push_all")
             self:pushBookNotes(false, true, true)
         end
         self:pushBookStats(false, true, interactive == true)
@@ -3706,8 +3957,16 @@ function Syncest:onSyncestToggleAutoSync(toggle)
     end
 end
 
+function Syncest:onSyncestOpenProgressHistory()
+    self:_runSafely("open progress history", function()
+        self:showProgressHistory()
+    end, true)
+end
+
 function Syncest:onSyncestPushProgress()
-    self:_runSafely("manual push progress", function() self:pushBookConfigAsync(true) end, true)
+    self:_runSafely("manual push progress", function()
+        self:pushBookConfigAsync(true, "manual", "manual")
+    end, true)
 end
 function Syncest:onSyncestPullProgress()
     self:_runSafely("manual pull progress", function() self:pullBookConfigAsync(true, true) end, true)
@@ -3764,7 +4023,7 @@ function Syncest:_pushAutoSyncBundle(reason, options)
             self:_cancelAutoPullTasks()
             self:_beginAutoNotifyBatch(20, true, "pushed")
             if options.progress then
-                self:pushBookConfigAsync(true)
+                self:pushBookConfigAsync(true, "auto", tostring(reason))
             end
             if options.stats then
                 self:pushBookStats(false, true)
@@ -3921,7 +4180,7 @@ function Syncest:onPageUpdate(page)
                 -- Chapter changes are discrete events, so do not hold them behind
                 -- the general page-turn API debounce. The background progress
                 -- queue still serializes requests and keeps only the latest state.
-                self:pushBookConfigAsync(notify)
+                self:pushBookConfigAsync(notify, "auto", "chapter")
             else
                 self:pushBookConfig(false, notify)
             end
