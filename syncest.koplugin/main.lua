@@ -10,6 +10,7 @@ local UIManager = require("ui/uimanager")
 local Device = require("device")
 local logger = require("logger")
 local FFIUtil = require("ffi/util")
+local Time = require("ui/time")
 local T = FFIUtil.template
 local _ = require("gettext")
 
@@ -32,6 +33,7 @@ local STARTUP_AUTO_PULL_PROGRESS_ENABLED = true
 local SYNC_PLUGIN_INERT_DIAGNOSTIC = false
 local AUTO_SYNC_POLL_INTERVAL = 0.25
 local PROGRESS_PULL_POLL_INTERVAL = 0.05
+local STARTUP_PROGRESS_PULL_WAIT = 0.35
 local PAGE_TURN_PUSH_DELAY = 5
 local CHAPTER_PUSH_DELAY = 0.1
 local AUTO_SYNC_MAX_POLLS = 260
@@ -723,23 +725,7 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply, file, o
     self._auto_pull_progress_running = true
     self._auto_pull_progress_pid = pid
     local polls = 0
-    local poll
-    poll = function()
-        polls = polls + 1
-        if not FFIUtil.isSubProcessDone(pid) then
-            if polls < AUTO_SYNC_MAX_POLLS then
-                UIManager:scheduleIn(PROGRESS_PULL_POLL_INTERVAL, poll)
-                return
-            end
-            FFIUtil.terminateSubProcess(pid)
-            logger.warn("Syncest background progress pull: timed out")
-            self._auto_pull_progress_running = false
-            self._auto_pull_progress_pid = nil
-            os.remove(result_file)
-            failed("timed out")
-            return
-        end
-
+    local function finish()
         self._auto_pull_progress_running = false
         self._auto_pull_progress_pid = nil
         local result, message = read_background_json_result(result_file)
@@ -788,6 +774,40 @@ function Syncest:_backgroundPullProgress(book_hash, notify, force_apply, file, o
             self:_applyProgressReadingStatus(book_hash, result)
         end
         if notify then self:_autoNotify("progress", "pulled", 0) end
+    end
+    local poll
+    poll = function()
+        polls = polls + 1
+        if not FFIUtil.isSubProcessDone(pid) then
+            if polls < AUTO_SYNC_MAX_POLLS then
+                UIManager:scheduleIn(PROGRESS_PULL_POLL_INTERVAL, poll)
+                return
+            end
+            FFIUtil.terminateSubProcess(pid)
+            logger.warn("Syncest background progress pull: timed out")
+            self._auto_pull_progress_running = false
+            self._auto_pull_progress_pid = nil
+            os.remove(result_file)
+            failed("timed out")
+            return
+        end
+        finish()
+    end
+    -- ReaderReady runs while Android input is already inhibited. Give the
+    -- normally fast WebDAV child a tightly bounded chance to finish here so
+    -- its location can be applied before KOReader paints the first page.
+    -- Slow/offline requests remain asynchronous and cannot stall startup.
+    if options.startup_wait then
+        local deadline = Time.now() + Time.s(STARTUP_PROGRESS_PULL_WAIT)
+        while not FFIUtil.isSubProcessDone(pid) and Time.now() < deadline do
+            FFIUtil.usleep(10000)
+        end
+        if FFIUtil.isSubProcessDone(pid) then
+            logger.info("Syncest startup progress pull: completed before first paint")
+            finish()
+            return true
+        end
+        logger.info("Syncest startup progress pull: continuing asynchronously")
     end
     -- Progress pulls happen at book-open time, where even small scheduling
     -- delays are noticeable. Check once on the next UI tick, then fall back to
@@ -1861,13 +1881,13 @@ function Syncest:onReaderReady()
             -- immediately restored on startup, its book-open pull is the
             -- authority; do not race that pull with the stale close marker.
             self:_clearPendingBook("progress", self:getBookIdentifiers())
-            self._auto_pull_progress_task = function()
-                self._auto_pull_progress_task = nil
-                self:_runSafely("auto pull progress", function()
-                    self:pullBookConfig(false, true, false)
-                end)
-            end
-            UIManager:scheduleIn(0, self._auto_pull_progress_task)
+            self:_runSafely("auto pull progress", function()
+                local book_hash = self:getBookIdentifiers()
+                if book_hash then
+                    self:_backgroundPullProgress(
+                        book_hash, true, false, nil, { startup_wait = true })
+                end
+            end)
         else
             logger.warn("Syncest onReaderReady: startup auto progress pull disabled")
         end
