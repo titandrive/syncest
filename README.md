@@ -9,6 +9,7 @@ Syncest was made primarily to be used alongside [Obsidian MoonSync](https://gith
 ## Features
 
 - Sync reading progress per book.
+- Keep a cross-device history of recent progress pushes and return to an older saved location.
 - Sync annotations, including deleted annotation tombstones.
 - Sync KOReader reading statistics.
 - Sync vocabulary builder entries.
@@ -62,6 +63,9 @@ vocab.json
 sync/
   <book-hash>/
     progress.json
+    progress-history/
+      devices.json
+      <device-id>.json
     annotations.json
     _<Book Title>.json
 books/
@@ -76,6 +80,8 @@ The `<book-hash>` folder names are stable machine identifiers. The `_<Book Title
 ## Synced Data
 
 `progress.json` stores the current reading location and related dynamic progress fields for a single book. When available, it also carries the book's current `readingStatus` and `readingStatusUpdatedAt` so progress-only sync workflows can see the same status that appears in `library.json`.
+
+`progress-history/` stores recent progress-push snapshots for the book. Each KOReader installation writes only to its own `<device-id>.json` file, avoiding cross-device write collisions, while `devices.json` lets the history browser discover every device. The latest 25 entries per device are retained. This history is separate from `progress.json`: normal syncing still uses `progress.json` as the current location, while the history files provide older locations that can be restored manually.
 
 `annotations.json` stores notes and highlights for a single book. Deleted annotations are synced as tombstones so another device can remove the same annotation instead of resurrecting it.
 
@@ -123,11 +129,32 @@ Pushes happen when data changes or when a book closes:
 - Optionally push stats on app suspend.
 - Push vocab on word lookup.
 
+## Progress History
+
+Progress History is a cross-device list of recent reading locations. It is intended as a recovery tool when you lose your place, accidentally jump elsewhere, or want to return to a location that was previously pushed from another KOReader device.
+
+History begins with the first successful progress push made by a version of Syncest that supports this feature. It does not reconstruct positions that existed before the feature was installed. Automatic and manual progress pushes are labeled separately, and manual pushes are recorded even when the current location is already synced.
+
+To use it:
+
+1. Open the relevant book.
+2. Open the main `Syncest` menu.
+3. Select `Progress history`, located immediately above `Push reading progress now` and `Pull reading progress now`.
+4. Select the first row to cycle between `Automatic and manual`, `Automatic only`, and `Manual only`.
+5. Select a saved entry and confirm `Go` to return to that location.
+
+The window shows the current book's title and author. Each entry shows its timestamp, whether it was automatic or manual, its saved page/location, and the device that created it.
+
+The number of entries displayed can be set to 10 or 25 under `Syncest` -> `Sync settings` -> `Progress` -> `Progress history entries`. Cloud retention is capped at the latest 25 entries per device for each book.
+
+`Syncest: Open progress history` is also available as a reader dispatcher action, so Progress History can be assigned to a KOReader gesture, profile, keyboard shortcut, or other dispatcher-driven action.
+
 ## Manual Sync
 
 When a book is open, Syncest shows manual commands for that book:
 
 - Push/pull reading progress.
+- Browse and restore progress history.
 - Push/pull annotations.
 
 The main Syncest menu also includes:
