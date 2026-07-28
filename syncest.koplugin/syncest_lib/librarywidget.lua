@@ -1070,9 +1070,9 @@ end
 -- Action helpers (used by handleHold's button dialog)
 -- ---------------------------------------------------------------------------
 
--- Run a book download without auto-opening the reader on success. Used by
--- both "Download Book" and "Download All" from the long-press action
--- sheet — there the user wants the file on device, not to start reading.
+-- Run a book download without auto-opening the reader on success. In the
+-- long-press action sheet the user wants the file on device, not to start
+-- reading immediately.
 local function downloadBookOnly(row, opts, after_cb)
     local download_dir = opts.settings.library_download_dir
         or G_reader_settings:readSetting("home_dir")
@@ -1111,25 +1111,6 @@ local function downloadBookOnly(row, opts, after_cb)
     end)
 end
 
-local function downloadCoverOnly(row, opts, after_cb)
-    local DataStorage = require("datastorage")
-    syncbooks.downloadCover(row, {
-        settings   = opts.settings,
-        covers_dir = DataStorage:getSettingsDir() .. "/readest_covers",
-    }, function(success, _path_or_err, status)
-        if not success then
-            local msg = (status == 404)
-                and _("No cover available on Readest.")
-                or _("Cover download failed.")
-            UIManager:show(InfoMessage:new{ text = msg, timeout = 3 })
-            if after_cb then after_cb(false) end
-            return
-        end
-        M.refresh()
-        if after_cb then after_cb(true) end
-    end)
-end
-
 -- Remove the local file for a book and clear local_present in the store.
 -- Returns true on success. Cloud-side state (cloud_present, deleted_at)
 -- is untouched.
@@ -1160,14 +1141,7 @@ end
 -- ---------------------------------------------------------------------------
 -- handleHold(item, opts) — long-press action sheet
 -- ---------------------------------------------------------------------------
--- Mirrors Readest's BookDetailView action set (apps/readest-app/src/
--- components/metadata/BookDetailView.tsx): Delete is a sub-menu with
--- Cloud & Device / Cloud Only / Device Only; Upload shows only when the
--- book is on device but not in the cloud; Download shows only when the
--- book is in the cloud. Cloud-side actions (Upload, Remove from Cloud)
--- need new /storage/upload + DELETE /sync calls that aren't ported yet,
--- so they're labeled but stubbed; local-side actions (Remove from
--- Device, Download Book/Cover/All) work today.
+-- Presence-aware actions for cloud books and their optional local copies.
 function M.handleHold(item, opts)
     if not item or not item._readest_row then return end
     local row = item._readest_row
@@ -1175,7 +1149,11 @@ function M.handleHold(item, opts)
     local ConfirmBox   = require("ui/widget/confirmbox")
 
     local on_cloud = row.cloud_present == 1
+    local lfs = require("libs/libkoreader-lfs")
     local on_local = row.local_present == 1
+        and type(row.file_path) == "string"
+        and row.file_path ~= ""
+        and lfs.attributes(row.file_path, "mode") == "file"
 
     local dialog
     local function close() UIManager:close(dialog) end
@@ -1225,45 +1203,42 @@ function M.handleHold(item, opts)
     end
 
     -- Delete sub-options (parity with BookDetailView's three-item dropdown).
-    add_row(_("Remove from Cloud & Device"), function()
-        close()
-        UIManager:show(ConfirmBox:new{
-            text = _("Remove this book from cloud and device?")
-                .. "\n\n" .. (row.title or ""),
-            ok_text = _("Remove"),
-            ok_callback = function()
-                local function finish_local()
-                    if on_local then removeLocalFile(row) end
-                    pushCloudTombstone(function(success, now)
-                        if success then
-                            M._store:upsertBook({
-                                hash                 = row.hash,
-                                title                = row.title,
-                                cloud_present        = 0,
-                                local_present        = 0,
-                                deleted_at           = now,
-                                updated_at           = now,
-                                _force_cloud_present = true,
-                            })
-                            M.refresh()
-                        else
-                            UIManager:show(InfoMessage:new{
-                                text = _("Cloud catalog removal failed."),
-                                timeout = 3,
-                            })
-                        end
+    if on_cloud and on_local then
+        add_row(_("Remove from Cloud & Device"), function()
+            close()
+            UIManager:show(ConfirmBox:new{
+                text = _("Remove this book from cloud and device?")
+                    .. "\n\n" .. (row.title or ""),
+                ok_text = _("Remove"),
+                ok_callback = function()
+                    doCloudDelete(function()
+                        removeLocalFile(row)
+                        pushCloudTombstone(function(success, now)
+                            if success then
+                                M._store:upsertBook({
+                                    hash                 = row.hash,
+                                    title                = row.title,
+                                    cloud_present        = 0,
+                                    local_present        = 0,
+                                    deleted_at           = now,
+                                    updated_at           = now,
+                                    _force_cloud_present = true,
+                                })
+                                M.refresh()
+                            else
+                                UIManager:show(InfoMessage:new{
+                                    text = _("Cloud catalog removal failed."),
+                                    timeout = 3,
+                                })
+                            end
+                        end)
                     end)
-                end
-                if on_cloud then
-                    doCloudDelete(function() finish_local() end)
-                else
-                    finish_local()
-                end
-            end,
-        })
-    end)
+                end,
+            })
+        end)
+    end
     if on_cloud then
-        add_row(_("Remove from Cloud Only"), function()
+        add_row(_("Remove from Cloud"), function()
             close()
             UIManager:show(ConfirmBox:new{
                 text = _("Remove this book from the cloud only?")
@@ -1298,7 +1273,7 @@ function M.handleHold(item, opts)
         end)
     end
     if on_local then
-        add_row(_("Remove from Device Only"), function()
+        add_row(_("Remove from Device"), function()
             close()
             UIManager:show(ConfirmBox:new{
                 text = _("Remove the local copy of this book?")
@@ -1311,88 +1286,11 @@ function M.handleHold(item, opts)
         end)
     end
 
-    -- Upload: parity with BookDetailView's `book.downloadedAt && onUpload`.
-    -- Shown whenever the book is on device, even if it's already in the
-    -- cloud — same gating as BookDetailView (which uses `downloadedAt`
-    -- alone, not `downloadedAt && !uploadedAt`). Re-uploading is the
-    -- web's path for replacing a cloud copy after local edits.
-    if on_local then
-        add_row(_("Upload to Cloud"), function()
+    if on_cloud and not on_local then
+        add_row(_("Download Book"), function()
             close()
-            local progress = InfoMessage:new{
-                text = _("Uploading…") .. " " .. (row.title or ""),
-            }
-            UIManager:show(progress)
-            local DataStorage = require("datastorage")
-            syncbooks.uploadBook(row, {
-                settings    = opts.settings,
-                covers_dir  = DataStorage:getSettingsDir() .. "/readest_covers",
-            }, function(success, msg, status)
-                UIManager:close(progress)
-                if not success then
-                    local text
-                    if status == 403 and msg and msg:find("quota", 1, true) then
-                        text = _("Storage quota exceeded.")
-                    else
-                        text = _("Upload failed.")
-                            .. " (" .. tostring(msg or status) .. ")"
-                    end
-                    UIManager:show(InfoMessage:new{ text = text, timeout = 4 })
-                    return
-                end
-                -- Mirror cloudService.uploadBook's bookkeeping: clear
-                -- deleted_at, bump uploaded_at + updated_at, mark cloud
-                -- present, then push the row so peers see the metadata.
-                -- _clear_fields un-tombstones since Lua nil in the row
-                -- table would otherwise be preserved by upsertBook.
-                local now = math.floor(os.time() * 1000)
-                M._store:upsertBook({
-                    hash          = row.hash,
-                    title         = row.title,
-                    cloud_present = 1,
-                    uploaded_at   = now,
-                    updated_at    = now,
-                    _clear_fields = { "deleted_at" },
-                })
-                local pushed = {}
-                for k, v in pairs(row) do pushed[k] = v end
-                pushed.cloud_present = 1
-                pushed.uploaded_at   = now
-                pushed.updated_at    = now
-                pushed.deleted_at    = nil
-                syncbooks.pushBook(pushed, {
-                    client    = opts.client,
-                    settings  = opts.settings,
-                }, function() M.refresh() end)
-                M.refresh()
-            end)
+            downloadBookOnly(row, opts)
         end)
-    end
-
-    -- Download: parity with BookDetailView's `book.uploadedAt && onDownload`.
-    -- BookDetailView has a single Download from Cloud button; we expose
-    -- Cover / Book / All from the user's request since the koplugin can
-    -- usefully download just the cover (e.g. to refresh the preview)
-    -- without also fetching the full file.
-    if on_cloud then
-        if not on_local then
-            add_row(_("Download Book"), function()
-                close()
-                downloadBookOnly(row, opts)
-            end)
-        end
-        add_row(_("Download Cover"), function()
-            close()
-            downloadCoverOnly(row, opts)
-        end)
-        if not on_local then
-            add_row(_("Download All"), function()
-                close()
-                downloadCoverOnly(row, opts, function()
-                    downloadBookOnly(row, opts)
-                end)
-            end)
-        end
     end
 
     if #rows == 0 then return end
