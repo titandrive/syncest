@@ -553,12 +553,14 @@ function M.pushChangedBooks(opts, cb)
                     total_uploads = total_uploads + 1
                 end
             end
-            if opts.on_upload_progress and total_uploads > 0 then
+            local progress_done = 0
+            local progress_total = opts.full_push and #changed or total_uploads
+            if opts.on_upload_progress and progress_total > 0 then
                 opts.on_upload_progress({
                     uploaded = uploaded,
                     failed = failed,
                     done = 0,
-                    total = total_uploads,
+                    total = progress_total,
                 })
             end
             for _, row in ipairs(changed) do
@@ -578,15 +580,42 @@ function M.pushChangedBooks(opts, cb)
                         failed = failed + 1
                         logger.warn("Syncest uploadBook failed: " .. tostring(err_up))
                     end
+                    progress_done = progress_done + 1
                     if opts.on_upload_progress then
                         opts.on_upload_progress({
                             uploaded = uploaded,
                             failed = failed,
-                            done = uploaded + failed,
-                            total = total_uploads,
+                            done = progress_done,
+                            total = progress_total,
                             title = row.title,
                             hash = row.hash,
                         })
+                    end
+                end
+            end
+            -- A manual Push All is also the cover repair path. Refresh covers
+            -- for books whose bytes were already present so grayscale covers
+            -- previously uploaded by an e-ink device are replaced with RGB
+            -- versions extracted from the embedded source image.
+            if opts.full_push then
+                for _, row in ipairs(changed) do
+                    if not uploaded_at[row.hash] then
+                        pcall(M.uploadBookCover, row, {
+                            client     = opts.client,
+                            settings   = opts.settings,
+                            covers_dir = covers_dir,
+                        })
+                        progress_done = progress_done + 1
+                        if opts.on_upload_progress then
+                            opts.on_upload_progress({
+                                uploaded = uploaded,
+                                failed = failed,
+                                done = progress_done,
+                                total = progress_total,
+                                title = row.title,
+                                hash = row.hash,
+                            })
+                        end
                     end
                 end
             end
@@ -911,17 +940,78 @@ function M.countMissingBooks(store)
 end
 
 -- ---------------------------------------------------------------------------
--- extractLocalCover — render embedded cover to dst_png
+-- extractLocalCover — decode the embedded cover to an RGB PNG.
+-- FileManagerBookInfo:getCoverImage() routes JPEGs through ffi/pic, which
+-- deliberately decodes to grayscale on monochrome devices. For CRE formats
+-- (EPUB, FB2, etc.) fetch the original embedded bytes and render them through
+-- MuPDF instead, whose output is RGB regardless of the display hardware.
 -- ---------------------------------------------------------------------------
 function M.extractLocalCover(file_path, dst_png)
     if not file_path or not dst_png then return false end
+    local ok_registry, DocumentRegistry = pcall(require, "document/documentregistry")
+    if ok_registry and DocumentRegistry then
+        local ok_doc, doc = pcall(DocumentRegistry.openDocument,
+            DocumentRegistry, file_path)
+        if ok_doc and doc then
+            local ok_load = true
+            if doc.loadDocument then
+                ok_load = pcall(doc.loadDocument, doc, false)
+            end
+            if ok_load and doc._document
+                    and doc._document.getCoverPageImageData then
+                local ok_data, data, size = pcall(
+                    doc._document.getCoverPageImageData, doc._document)
+                if ok_data and data and size then
+                    local RenderImage = require("ui/renderimage")
+                    local ok_render, cover_bb = pcall(
+                        RenderImage.renderImageDataWithMupdf,
+                        RenderImage, data, size)
+                    local ffi = require("ffi")
+                    pcall(ffi.C.free, data)
+                    if ok_render and cover_bb then
+                        local wrote = cover_bb:writeToFile(dst_png, "png")
+                        if cover_bb.free then cover_bb:free() end
+                        doc:close()
+                        return wrote == true
+                    end
+                end
+            end
+            doc:close()
+        end
+    end
     local ok, FileManagerBookInfo = pcall(require, "apps/filemanager/filemanagerbookinfo")
     if not ok or not FileManagerBookInfo then return false end
-    local got, cover_bb = pcall(FileManagerBookInfo.getCoverImage, FileManagerBookInfo, nil, file_path)
+    local got, cover_bb = pcall(
+        FileManagerBookInfo.getCoverImage,
+        FileManagerBookInfo, nil, file_path, true)
     if not got or not cover_bb then return false end
     local wrote = cover_bb:writeToFile(dst_png, "png")
     if cover_bb.free then cover_bb:free() end
     return wrote == true
+end
+
+function M.uploadBookCover(book, opts)
+    local lfs = require("libs/libkoreader-lfs")
+    local api, url, user, pass = webdav(opts)
+    if not book or not book.hash or not book.file_path or not opts.covers_dir then
+        return false
+    end
+    if lfs.attributes(book.file_path, "mode") ~= "file" then return false end
+    if not lfs.attributes(opts.covers_dir, "mode") then
+        lfs.mkdir(opts.covers_dir)
+    end
+    -- Keep this separate from downloaded cloud covers (<hash>.png). Files
+    -- carrying this suffix were generated by the source-color decoder above.
+    local cover_path = opts.covers_dir .. "/" .. book.hash .. ".source.png"
+    if lfs.attributes(cover_path, "mode") ~= "file"
+            and not M.extractLocalCover(book.file_path, cover_path) then
+        return false
+    end
+    local cover_rel = string.format("books/%s/cover.png", book.hash)
+    local code = safe_webdav_call("uploadCover " .. cover_rel, function()
+        return api:uploadFile(url(cover_rel), user, pass, cover_path)
+    end)
+    return type(code) == "number" and code >= 200 and code <= 299
 end
 
 -- ---------------------------------------------------------------------------
@@ -976,27 +1066,8 @@ function M.uploadBook(book, opts, cb)
         os.remove(marker)
     end
 
-    -- Upload cover (best-effort)
-    local cover_path = opts.covers_dir
-        and (opts.covers_dir .. "/" .. book.hash .. ".png")
-    local cover_attr = cover_path and lfs.attributes(cover_path)
-    local has_cover  = cover_attr and cover_attr.mode == "file"
-
-    if not has_cover and cover_path then
-        if not lfs.attributes(opts.covers_dir, "mode") then
-            lfs.mkdir(opts.covers_dir)
-        end
-        if M.extractLocalCover(book.file_path, cover_path) then
-            has_cover = true
-        end
-    end
-
-    if has_cover then
-        local cover_rel = string.format("books/%s/cover.png", book.hash)
-        safe_webdav_call("uploadCover " .. cover_rel, function()
-            return api:uploadFile(url(cover_rel), user, pass, cover_path)
-        end)
-    end
+    -- Upload source-color cover (best-effort).
+    M.uploadBookCover(book, opts)
 
     if cb then cb(true) end
     return true

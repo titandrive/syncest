@@ -489,6 +489,37 @@ function M.refresh()
     M._menu:switchItemTable(title_for(M._search), items, jump_to)
 end
 
+function M.refreshCloud()
+    if not M._opts or not M._store or not M._opts.client then return end
+    local cloud_covers = require("syncest_lib.cloud_covers")
+    local progress = InfoMessage:new{
+        text = _("Refreshing cloud library…"),
+        timeout = 30,
+    }
+    UIManager:show(progress)
+    NetworkMgr:runWhenOnline(function()
+        Trapper:wrap(function()
+            cloud_covers.clear_download_cache()
+            syncbooks.pullBooks({
+                client = M._opts.client,
+                settings = M._opts.settings,
+                store = M._store,
+            }, function(success)
+                UIManager:close(progress)
+                if success then
+                    M.refresh()
+                    if M._menu then UIManager:setDirty(M._menu, "ui") end
+                else
+                    UIManager:show(InfoMessage:new{
+                        text = _("Cloud library refresh failed."),
+                        timeout = 3,
+                    })
+                end
+            end)
+        end)
+    end)
+end
+
 -- ---------------------------------------------------------------------------
 -- close() — tear down the Library Menu if it's open.
 -- ---------------------------------------------------------------------------
@@ -523,7 +554,7 @@ end
 -- runOpenSync(opts, menu) — fired after the menu is shown; runs lightScan
 -- + cloud sync in a background-friendly way (Trapper coroutine for the
 -- progress dialog; subprocess for the heavy walk happens inside
--- localscanner.fullSidecarWalk on first run / 24h gate / explicit Rescan).
+-- localscanner.fullSidecarWalk on first run / 24h interval).
 --
 -- Sync direction depends on settings.auto_sync (mirrors the auto-sync
 -- toggle the user controls from the Readest plugin menu):
@@ -1176,7 +1207,7 @@ function M.handleTap(item, opts)
             if row.cloud_present ~= 1 then
                 local ConfirmBox = require("ui/widget/confirmbox")
                 UIManager:show(ConfirmBox:new{
-                    text = _("File moved or deleted. Rescan library?"),
+                    text = _("File moved or deleted. Refresh the local index?"),
                     ok_callback = function()
                         Trapper:wrap(function()
                             localscanner.fullSidecarWalk({

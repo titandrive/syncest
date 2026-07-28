@@ -1,6 +1,6 @@
 -- libraryviewmenu.lua
 -- The Library view-menu — a ButtonDialog with sections for View Mode,
--- Columns, Cover fit, Group by, Sort by, Rescan library, and Download
+-- Columns, Cover fit, Group by, Sort by, cloud refresh, and Download
 -- folder. Persists every choice to G_reader_settings.readest_sync.library_*
 -- and notifies the caller (LibraryWidget) so it can re-query and re-render.
 --
@@ -120,18 +120,9 @@ function M.show(opts)
             { { text = _("Actions"), enabled = false } },
             {
                 {
-                    text = _("Rescan library"),
+                    text = _("Refresh cloud library"),
                     callback = function()
-                        local Trapper = require("ui/trapper")
-                        local LibraryWidget = require("syncest_lib.librarywidget")
-                        local localscanner = require("syncest_lib.localscanner")
-                        Trapper:wrap(function()
-                            localscanner.fullSidecarWalk({
-                                store    = LibraryWidget._store,
-                                home_dir = G_reader_settings:readSetting("home_dir"),
-                            })
-                            LibraryWidget.refresh()
-                        end)
+                        require("syncest_lib.librarywidget").refreshCloud()
                     end,
                 },
                 {

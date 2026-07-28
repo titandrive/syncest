@@ -72,6 +72,33 @@ function M.cover_token(hash)
     return source_token(cover_path_for(hash))
 end
 
+-- Drop downloaded cloud covers and every derived thumbnail so the next
+-- Library paint fetches the current WebDAV cover instead of treating an old
+-- on-device PNG as authoritative.
+function M.clear_download_cache()
+    local lfs = require("libs/libkoreader-lfs")
+    for _, cached in pairs(_memory_thumbnails) do
+        if cached.bb then cached.bb:free() end
+    end
+    _memory_thumbnails = {}
+    _cover_pending = {}
+    _missing_covers = {}
+    _download_queue = {}
+
+    for _, dir in ipairs({ M.covers_dir(), thumbnail_dir() }) do
+        if lfs.attributes(dir, "mode") == "directory" then
+            local ok, iter, dir_obj = pcall(lfs.dir, dir)
+            if ok then
+                for name in iter, dir_obj do
+                    if name ~= "." and name ~= ".." then
+                        os.remove(dir .. "/" .. name)
+                    end
+                end
+            end
+        end
+    end
+end
+
 local function read_text(path)
     local f = io.open(path, "r")
     if not f then return nil end
