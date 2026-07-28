@@ -740,7 +740,20 @@ function WebDavSyncClient:_appendProgressHistory(book_hash, history)
         return (tonumber(a.timestamp) or 0) > (tonumber(b.timestamp) or 0)
     end)
     local limit = math.max(1, tonumber(history.limit) or 100)
-    while #entries > limit do table.remove(entries) end
+    -- Retain the newest entries independently by source. A busy automatic
+    -- sync stream must not evict the manual checkpoints users explicitly
+    -- saved for recovery. Legacy/missing source values count as automatic,
+    -- matching the progress-history UI.
+    local retained = {}
+    local source_counts = { manual = 0, auto = 0 }
+    for _, entry in ipairs(entries) do
+        local source = entry.source == "manual" and "manual" or "auto"
+        if source_counts[source] < limit then
+            retained[#retained + 1] = entry
+            source_counts[source] = source_counts[source] + 1
+        end
+    end
+    entries = retained
     if not self:_writeJSON(device_path, {
         version = 1,
         deviceId = device_id,

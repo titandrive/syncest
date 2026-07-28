@@ -68,7 +68,57 @@ local function progress_history_device_name(settings)
     return name
 end
 
-local function add_progress_history(payload, settings, source, reason)
+local function first_sentence(text)
+    if type(text) ~= "string" then return nil end
+    text = text:gsub("%s+", " "):match("^%s*(.-)%s*$")
+    if text == "" then return nil end
+    local sentence_end = text:find("[%.%!%?…][\"'’”%)]*%s")
+    if sentence_end then text = text:sub(1, sentence_end) end
+    local max_chars = 140
+    if #text > max_chars then
+        text = text:sub(1, max_chars):gsub("%s+%S*$", "") .. "…"
+    end
+    return text
+end
+
+local function progress_history_context(ui, config)
+    local context = {}
+    if not ui or not ui.document then return context end
+    local page = tonumber(config and config.currentPage)
+        or (ui.getCurrentPage and ui:getCurrentPage())
+    if page and ui.toc and ui.toc.getTocTitleByPage then
+        local ok, chapter = pcall(ui.toc.getTocTitleByPage, ui.toc, page)
+        if ok and type(chapter) == "string" and chapter ~= "" then
+            context.chapterTitle = chapter:gsub("%s+", " ")
+        end
+    end
+
+    if not ui.document.getTextFromPositions then return context end
+    local ok, result = pcall(function()
+        if ui.document.info and ui.document.info.has_pages
+                and ui.document.getTextBoxes and page then
+            local boxes = ui.document:getTextBoxes(page)
+            local first_line = boxes and boxes[1]
+            local last_line = boxes and boxes[#boxes]
+            local first = first_line and first_line[1]
+            local last = last_line and last_line[#last_line]
+            if not (first and last) then return nil end
+            return ui.document:getTextFromPositions(
+                { x = first.x0, y = first.y0, page = page },
+                { x = last.x1, y = last.y1, page = page }, true)
+        end
+        return ui.document:getTextFromPositions(
+            { x = 0, y = 0 },
+            { x = Device.screen:getWidth(), y = Device.screen:getHeight() },
+            true)
+    end)
+    if ok and type(result) == "table" then
+        context.excerpt = first_sentence(result.text)
+    end
+    return context
+end
+
+local function add_progress_history(payload, settings, source, reason, ui)
     local config = payload and payload.configs and payload.configs[1]
     if type(config) ~= "table" then return payload end
     local timestamp = tonumber(config.updatedAt) or os.time() * 1000
@@ -77,6 +127,7 @@ local function add_progress_history(payload, settings, source, reason)
     local progress = type(config.progress) == "table" and config.progress or {}
     local location_key = tostring(config.currentPage or progress[1]
         or config.xpointer or ""):gsub("[^%w_.%-]", "_")
+    local context = progress_history_context(ui, config)
     payload.progressHistory = {
         deviceId = device_id,
         deviceName = progress_history_device_name(settings),
@@ -93,6 +144,8 @@ local function add_progress_history(payload, settings, source, reason)
             source = resolved_source,
             reason = reason,
             config = config,
+            chapterTitle = context.chapterTitle,
+            excerpt = context.excerpt,
         },
     }
     return payload
@@ -1066,7 +1119,8 @@ function Syncest:pushBookConfigAsync(notify, history_source, history_reason)
         notes = {},
         configs = { config },
     })
-    add_progress_history(payload, self.settings, history_source, history_reason)
+    add_progress_history(
+        payload, self.settings, history_source, history_reason, self.ui)
     local already_pushed = self:_progressPayloadAlreadyPushed(payload)
     self:_markPendingBook("progress", nil, config.bookHash)
     if NetworkMgr:willRerunWhenOnline(
@@ -2672,7 +2726,7 @@ function Syncest:addToMainMenu(menu_items)
                     },
                     {
                         text_func = function()
-                            return T(_("Progress history entries: %1"),
+                            return T(_("Progress history entries per type: %1"),
                                 tostring(self.settings.progress_history_count or 25))
                         end,
                         sub_item_table_func = function()
@@ -3155,6 +3209,19 @@ local function progress_history_location_text(config)
     return _("Saved location")
 end
 
+local function progress_history_entry_text(entry)
+    entry = type(entry) == "table" and entry or {}
+    local parts = {}
+    if type(entry.chapterTitle) == "string" and entry.chapterTitle ~= "" then
+        parts[#parts + 1] = entry.chapterTitle
+    end
+    parts[#parts + 1] = progress_history_location_text(entry.config)
+    if type(entry.excerpt) == "string" and entry.excerpt ~= "" then
+        parts[#parts + 1] = "“" .. entry.excerpt .. "”"
+    end
+    return table.concat(parts, " · ")
+end
+
 function Syncest:_showProgressHistoryEntries(entries)
     local filter = self.settings.progress_history_filter or "both"
     local count = math.max(1, tonumber(self.settings.progress_history_count) or 25)
@@ -3162,6 +3229,13 @@ function Syncest:_showProgressHistoryEntries(entries)
     local book_title = metadata.title ~= "" and metadata.title or _("Unknown title")
     local book_author = #metadata.authors > 0
         and table.concat(metadata.authors, ", ") or _("Unknown author")
+    local current_config = SyncConfig:getCurrentBookConfig(self.ui)
+    local current_context = progress_history_context(self.ui, current_config)
+    local current_location = progress_history_entry_text({
+        config = current_config,
+        chapterTitle = current_context.chapterTitle,
+        excerpt = current_context.excerpt,
+    })
     local labels = {
         both = _("Automatic and manual"),
         auto = _("Automatic only"),
@@ -3172,21 +3246,32 @@ function Syncest:_showProgressHistoryEntries(entries)
         _history_filter = true,
     }}
     local shown = 0
+    local shown_by_source = { manual = 0, auto = 0 }
     for history_index, entry in ipairs(entries or {}) do
-        if shown >= count then break end
-        if filter == "both" or entry.source == filter then
+        local entry_source = entry.source == "manual" and "manual" or "auto"
+        local source_matches = filter == "both" or entry_source == filter
+        local source_has_room = shown_by_source[entry_source] < count
+        if source_matches and source_has_room then
             shown = shown + 1
+            shown_by_source[entry_source] = shown_by_source[entry_source] + 1
             local timestamp = tonumber(entry.timestamp) or 0
             if timestamp > 100000000000 then timestamp = math.floor(timestamp / 1000) end
-            local source = entry.source == "manual" and _("Manual") or _("Automatic")
+            local source = entry_source == "manual" and _("Manual") or _("Automatic")
             local device = entry.deviceName or entry.deviceId or _("Unknown device")
             item_table[#item_table + 1] = {
-                text = os.date("%Y-%m-%d %H:%M", timestamp)
+                text = progress_history_entry_text(entry)
+                    .. " · " .. os.date("%Y-%m-%d %H:%M", timestamp)
                     .. " · " .. source
-                    .. " · " .. progress_history_location_text(entry.config)
                     .. " · " .. tostring(device),
                 _history_entry = entry,
             }
+        end
+        if filter == "both"
+                and shown_by_source.manual >= count
+                and shown_by_source.auto >= count then
+            break
+        elseif filter ~= "both" and shown_by_source[filter] >= count then
+            break
         end
     end
     if shown == 0 then
@@ -3199,7 +3284,8 @@ function Syncest:_showProgressHistoryEntries(entries)
     local menu
     menu = Menu:new{
         title = _("Progress history") .. "\n" .. book_title,
-        subtitle = book_author,
+        subtitle = book_author .. "\n"
+            .. _("Current") .. ": " .. current_location,
         title_multilines = true,
         title_shrink_font_to_fit = true,
         is_borderless = true,
@@ -3221,7 +3307,7 @@ function Syncest:_showProgressHistoryEntries(entries)
             if not entry or type(entry.config) ~= "table" then return end
             UIManager:show(ConfirmBox:new{
                 text = _("Go to this saved reading position?")
-                    .. "\n\n" .. progress_history_location_text(entry.config),
+                    .. "\n\n" .. progress_history_entry_text(entry),
                 ok_text = _("Go"),
                 cancel_text = _("Cancel"),
                 ok_callback = function()
