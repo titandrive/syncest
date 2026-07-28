@@ -738,6 +738,13 @@ function M._open(opts, internal)
             libraryitem.set_visible_hashes(self)
             return orig_update(self, ...)
         end
+
+        -- Menu:new() ran the stock list renderer before we installed the
+        -- CoverMenu/MosaicMenu mixins above. Build the selected cover view
+        -- immediately; otherwise the first real grid build does not happen
+        -- until the background cloud sync calls M.refresh() a few seconds
+        -- later, making cached covers appear no faster than uncached ones.
+        menu:updateItems()
     end
 
     -- Tap on the title bar (anywhere not on the left search icon or the

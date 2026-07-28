@@ -22,6 +22,10 @@ local _refresh_pending = false
 local _download_queue  = {}
 local _downloading     = false
 
+-- Decoded, view-sized cover masters. Callers receive copies because
+-- KOReader's cover widgets take ownership of (and free) their blitbuffers.
+local _memory_thumbnails = {}
+
 -- WebDAV opts (set via M.set_opts). Holds { settings } with webdav_* fields.
 local _opts = nil
 
@@ -46,20 +50,116 @@ local function cover_path_for(hash)
     return M.covers_dir() .. "/" .. hash .. ".png"
 end
 
+local function thumbnail_dir()
+    local DataStorage = require("datastorage")
+    return DataStorage:getSettingsDir() .. "/syncest_thumbnails"
+end
+
+local THUMBNAIL_BOUNDS = {
+    grid   = { w = 360, h = 480 },
+    list   = { w = 360, h = 480 },
+    source = nil,
+}
+
+local function source_token(path)
+    local lfs = require("libs/libkoreader-lfs")
+    local attr = lfs.attributes(path)
+    if not attr then return nil end
+    return tostring(attr.modification or 0) .. ":" .. tostring(attr.size or 0)
+end
+
+function M.cover_token(hash)
+    return source_token(cover_path_for(hash))
+end
+
+local function read_text(path)
+    local f = io.open(path, "r")
+    if not f then return nil end
+    local value = f:read("*a")
+    f:close()
+    return value
+end
+
+local function write_text(path, value)
+    local f = io.open(path, "w")
+    if not f then return false end
+    f:write(value)
+    f:close()
+    return true
+end
+
+local function copy_bb(bb)
+    if not bb then return nil end
+    local ok, copy = pcall(bb.copy, bb)
+    return ok and copy or nil
+end
+
 function M.hash_from_uri(filepath)
     local rest = filepath:sub(#M.URI_PREFIX + 1)
     return (rest:match("^([^.]+)") or rest)
 end
 
-function M.load_cover_bb(hash)
+-- Load a cover, optionally through a persistent view-sized thumbnail.
+-- The source PNG remains the authority; its mtime+size token invalidates both
+-- memory and disk thumbnails when a newer cover is downloaded.
+function M.load_cover_bb(hash, variant)
     local lfs = require("libs/libkoreader-lfs")
-    local path = cover_path_for(hash)
-    if lfs.attributes(path, "mode") ~= "file" then return nil end
+    local source_path = cover_path_for(hash)
+    if lfs.attributes(source_path, "mode") ~= "file" then return nil end
+    variant = THUMBNAIL_BOUNDS[variant] and variant or "source"
+    local token = source_token(source_path)
+    if not token then return nil end
+
+    local memory_key = hash .. ":" .. variant
+    local memory = _memory_thumbnails[memory_key]
+    if memory and memory.token == token and memory.bb then
+        local copy = copy_bb(memory.bb)
+        if copy then return copy end
+    elseif memory and memory.bb then
+        memory.bb:free()
+        _memory_thumbnails[memory_key] = nil
+    end
+
     local ok, RenderImage = pcall(require, "ui/renderimage")
     if not ok then return nil end
-    local ok2, bb = pcall(RenderImage.renderImageFile, RenderImage, path, false)
+
+    local load_path = source_path
+    local thumb_path, meta_path
+    local bounds = THUMBNAIL_BOUNDS[variant]
+    if bounds then
+        require("util").makePath(thumbnail_dir())
+        thumb_path = thumbnail_dir() .. "/" .. hash .. "-" .. variant .. ".png"
+        meta_path = thumb_path .. ".meta"
+        if lfs.attributes(thumb_path, "mode") == "file"
+                and read_text(meta_path) == token then
+            load_path = thumb_path
+        end
+    end
+
+    local ok2, bb = pcall(RenderImage.renderImageFile, RenderImage, load_path, false)
     if not ok2 or not bb then return nil end
-    return bb
+
+    -- First use after a source change: scale once, persist once.
+    if bounds and load_path == source_path then
+        local w, h = bb:getWidth(), bb:getHeight()
+        local factor = math.min(bounds.w / w, bounds.h / h, 1)
+        local target_w = math.max(1, math.floor(w * factor + 0.5))
+        local target_h = math.max(1, math.floor(h * factor + 0.5))
+        local scaled = bb
+        if target_w ~= w or target_h ~= h then
+            local ok_scale, result = pcall(bb.scale, bb, target_w, target_h)
+            if ok_scale and result then
+                scaled = result
+                bb:free()
+            end
+        end
+        bb = scaled
+        local wrote = bb:writeToFile(thumb_path, "png")
+        if wrote then write_text(meta_path, token) end
+    end
+
+    _memory_thumbnails[memory_key] = { token = token, bb = bb }
+    return copy_bb(bb)
 end
 
 local function tag_for(hash)
@@ -109,6 +209,13 @@ local function process_queue()
             else
                 logger.info("WebDavSync cover " .. tag_for(hash)
                     .. " saved → " .. tostring(path_or_err))
+                -- Any in-process thumbnail for an overwritten source is stale.
+                for _, variant in ipairs({ "source", "grid", "list" }) do
+                    local key = hash .. ":" .. variant
+                    local cached = _memory_thumbnails[key]
+                    if cached and cached.bb then cached.bb:free() end
+                    _memory_thumbnails[key] = nil
+                end
                 if not _refresh_pending then
                     _refresh_pending = true
                     local UIManager = require("ui/uimanager")

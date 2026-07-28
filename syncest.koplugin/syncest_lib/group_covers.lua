@@ -1,20 +1,19 @@
 -- group_covers.lua
 -- macOS-style folder previews: a 2x2 mosaic of the first N child book
 -- covers, served as a synthetic readest-group:// URI through the
--- patched BookInfoManager. Composites are recomposed in memory on every
--- paint — no on-disk cache. Earlier versions cached PNGs under
--- <settings>/readest_group_covers/, content-fingerprinted by child
--- hashes, but any partial composite written while children's covers
--- were still downloading would freeze: the fingerprint stayed the same
--- once all four arrived, so the partial PNG kept serving forever.
--- Recomposing each paint is cheap (4 small covers + scale + blit) and
--- side-steps that cache-coherency surface entirely.
+-- patched BookInfoManager. Fully populated composites are cached on disk
+-- and in memory. The fingerprint includes each source cover's presence,
+-- size and mtime, so a newly downloaded child invalidates an older mosaic.
+-- Partial composites are deliberately never persisted.
 
 local cloud_covers = require("syncest_lib.cloud_covers")
+local sha2 = require("ffi/sha2")
 
 local M = {}
 
 M.URI_PREFIX = "readest-group://"
+
+local _mosaic_cache = {}
 
 -- Layouts:
 --   "grid" — 2x2, 360x480 (3:4 — typical book-cover aspect).
@@ -98,12 +97,62 @@ function M.child_cover_bb(book, orig_getBookInfo, BIM)
     return nil
 end
 
--- Compose up to N child covers into a mosaic, returning a fresh bb that
--- the caller (ImageWidget) takes ownership of. Returns nil if no child
--- produced a cover. Intentionally regenerated on every paint — see the
--- module-level comment.
+local function cache_dir()
+    local DataStorage = require("datastorage")
+    return DataStorage:getSettingsDir() .. "/syncest_group_thumbnails"
+end
+
+local function read_text(path)
+    local f = io.open(path, "r")
+    if not f then return nil end
+    local value = f:read("*a")
+    f:close()
+    return value
+end
+
+local function write_text(path, value)
+    local f = io.open(path, "w")
+    if not f then return false end
+    f:write(value)
+    f:close()
+    return true
+end
+
+local function copy_bb(bb)
+    if not bb then return nil end
+    local ok, copy = pcall(bb.copy, bb)
+    return ok and copy or nil
+end
+
+local function file_token(path)
+    if not path or path == "" then return nil end
+    local lfs = require("libs/libkoreader-lfs")
+    local attr = lfs.attributes(path)
+    if not attr then return nil end
+    return tostring(attr.modification or 0) .. ":" .. tostring(attr.size or 0)
+end
+
+local function books_fingerprint(books, shape)
+    local parts = { shape or "grid", tostring(#books) }
+    for i, book in ipairs(books) do
+        local local_token = book.local_present == 1 and file_token(book.file_path) or nil
+        local cloud_token = book.hash and cloud_covers.cover_token(book.hash) or nil
+        parts[#parts + 1] = table.concat({
+            tostring(i),
+            tostring(book.hash or ""),
+            tostring(local_token or "-"),
+            tostring(cloud_token or "-"),
+            tostring(book.updated_at or "-"),
+        }, ":")
+    end
+    return sha2.md5(table.concat(parts, "|"))
+end
+
+-- Compose up to N child covers into a mosaic. The placed/expected counts let
+-- the caller distinguish a complete image (safe to persist) from a partial
+-- one that should be repainted after pending cover downloads finish.
 local function compose(books, shape, orig_getBookInfo, BIM)
-    if #books == 0 then return nil end
+    if #books == 0 then return nil, 0, 0 end
     local layout = M.LAYOUTS[shape] or M.LAYOUTS.grid
     local target_w, target_h = layout.target_w, layout.target_h
     local cols, rows = layout.cols, layout.rows
@@ -139,9 +188,9 @@ local function compose(books, shape, orig_getBookInfo, BIM)
 
     if placed == 0 then
         target:free()
-        return nil
+        return nil, 0, expected
     end
-    return target
+    return target, placed, expected
 end
 
 -- Cells-per-mosaic for a given shape. Used by callers to know how many
@@ -151,10 +200,8 @@ function M.cells_for(shape)
     return layout.cols * layout.rows
 end
 
--- High-level: query the store, compose a fresh mosaic, return (bb,
--- books). books is the resolved list (so callers can reuse it without a
--- second query). bb is freshly composed every call — see the module
--- header for why we deliberately don't cache.
+-- High-level: query the store and serve a validated cached composite, or
+-- compose it once. The returned bb is always caller-owned.
 function M.serve_or_compose(group_by, value, shape,
                             store, settings, orig_getBookInfo, BIM)
     if not store then return nil, {} end
@@ -163,7 +210,53 @@ function M.serve_or_compose(group_by, value, shape,
         sort_by  = settings and settings.library_sort_by,
         sort_asc = settings and settings.library_sort_ascending == true,
     })
-    return compose(books, shape, orig_getBookInfo, BIM), books
+    local identity = sha2.md5(table.concat({
+        tostring(group_by), tostring(value), tostring(shape or "grid"),
+    }, "|"))
+    local fingerprint = books_fingerprint(books, shape)
+    local memory = _mosaic_cache[identity]
+    if memory and memory.fingerprint == fingerprint and memory.bb then
+        local copy = copy_bb(memory.bb)
+        if copy then return copy, books end
+    elseif memory and memory.bb then
+        memory.bb:free()
+        _mosaic_cache[identity] = nil
+    end
+
+    require("util").makePath(cache_dir())
+    local image_path = cache_dir() .. "/" .. identity .. ".png"
+    local key_path = image_path .. ".meta"
+    local lfs = require("libs/libkoreader-lfs")
+    if lfs.attributes(image_path, "mode") == "file"
+            and read_text(key_path) == fingerprint then
+        local ok_render, RenderImage = pcall(require, "ui/renderimage")
+        if ok_render then
+            local ok_load, bb = pcall(
+                RenderImage.renderImageFile, RenderImage, image_path, false)
+            if ok_load and bb then
+                _mosaic_cache[identity] = {
+                    fingerprint = fingerprint,
+                    bb = bb,
+                }
+                return copy_bb(bb), books
+            end
+        end
+    end
+
+    local bb, placed, expected = compose(books, shape, orig_getBookInfo, BIM)
+    if not bb then return nil, books end
+    if placed == expected then
+        local wrote = bb:writeToFile(image_path, "png")
+        if wrote then write_text(key_path, fingerprint) end
+        _mosaic_cache[identity] = {
+            fingerprint = fingerprint,
+            bb = bb,
+        }
+        local copy = copy_bb(bb)
+        if copy then return copy, books end
+        _mosaic_cache[identity] = nil
+    end
+    return bb, books
 end
 
 return M

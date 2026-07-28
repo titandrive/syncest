@@ -73,7 +73,9 @@ local function patch_bim(opts)
             _no_provider  = true,
         }
         if do_cover_image then
-            local bb = cloud_covers.load_cover_bb(hash)
+            local settings = M._opts and M._opts.settings or {}
+            local variant = settings.library_view_mode == "list" and "list" or "grid"
+            local bb = cloud_covers.load_cover_bb(hash, variant)
             if bb then
                 local w, h = bb:getWidth(), bb:getHeight()
                 info.cover_bb      = bb
