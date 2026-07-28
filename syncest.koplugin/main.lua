@@ -3937,10 +3937,13 @@ function Syncest:touchOpenBook()
 end
 
 function Syncest:_backgroundSyncBooksLibrary(
-        mode, interactive, archive_dir, archived_hashes, archived_paths,
+        mode, interactive, archive_dir, library_dir,
+        eligible_hashes, archived_hashes, archived_paths,
         pull_files, download_dir)
     local settings = copy_settings(self.settings)
     settings.syncest_archive_dir = archive_dir
+    settings.syncest_library_dir = library_dir
+    settings.syncest_eligible_hashes = eligible_hashes
     settings.syncest_archived_hashes = archived_hashes
     settings.syncest_archived_paths = archived_paths
     local server = settings and settings.sync_server
@@ -4127,8 +4130,19 @@ function Syncest:syncBooksLibrary(mode, interactive, confirmed)
     -- local files too, so a matching cloud book is skipped instead of being
     -- downloaded under a collision filename.
     if mode == "push" or mode == "both" or mode == "pull" then
+        -- Reconcile the index with the filesystem first. In particular, this
+        -- force-clears local_present for rows whose files were removed, so a
+        -- full push cannot resurrect stale catalog entries.
+        pcall(localscanner.lightScan, {
+            store = store,
+            ui = self.ui,
+        })
         local archived_hashes = archive_dir
             and localscanner.bookHashesInDir(archive_dir) or nil
+        local eligible_hashes = localscanner.bookHashesInDir(home_dir)
+        for hash in pairs(archived_hashes or {}) do
+            eligible_hashes[hash] = nil
+        end
         -- KOReader records archived-file -> original-directory. Include both
         -- paths because our SQLite row may still contain the pre-move path.
         local archived_paths = {}
@@ -4145,7 +4159,9 @@ function Syncest:syncBooksLibrary(mode, interactive, confirmed)
             dir = home_dir,
             excluded_dirs = (mode == "push" or mode == "both")
                 and archive_dir and { archive_dir } or nil,
-            compute_hashes = mode == "pull",
+            -- A bulk push means every supported file currently in the home
+            -- tree, including books KOReader has not opened yet.
+            compute_hashes = true,
         })
         if mode == "pull" and archive_dir and archive_dir ~= home_dir
                 and not localscanner.path_is_excluded(archive_dir, { home_dir }) then
@@ -4175,13 +4191,15 @@ function Syncest:syncBooksLibrary(mode, interactive, confirmed)
                 return
             end
             self:_backgroundSyncBooksLibrary(
-                mode, interactive, archive_dir, archived_hashes, archived_paths,
+                mode, interactive, archive_dir, home_dir,
+                eligible_hashes, archived_hashes, archived_paths,
                 true, download_dir)
             return
         end
         self:touchOpenBook()
         self:_backgroundSyncBooksLibrary(
-            mode, interactive, archive_dir, archived_hashes, archived_paths)
+            mode, interactive, archive_dir, home_dir,
+            eligible_hashes, archived_hashes, archived_paths)
         return
     end
     self:_backgroundSyncBooksLibrary(mode, interactive)

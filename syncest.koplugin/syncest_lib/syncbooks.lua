@@ -463,6 +463,8 @@ function M.pushChangedBooks(opts, cb)
         or store:getChangedBooks(since)
     local lfs = require("libs/libkoreader-lfs")
     local archive_dir = opts.settings and opts.settings.syncest_archive_dir
+    local library_dir = opts.settings and opts.settings.syncest_library_dir
+    local eligible_hashes = opts.settings and opts.settings.syncest_eligible_hashes
     local archived_hashes = opts.settings and opts.settings.syncest_archived_hashes
     local archived_paths = opts.settings and opts.settings.syncest_archived_paths
     local function is_archived(row)
@@ -497,7 +499,11 @@ function M.pushChangedBooks(opts, cb)
         local existing_files = {}
         for _, row in ipairs(changed) do
             if row.file_path
-                    and lfs.attributes(row.file_path, "mode") == "file" then
+                    and lfs.attributes(row.file_path, "mode") == "file"
+                    and library_dir
+                    and path_is_in_dir(row.file_path, library_dir)
+                    and eligible_hashes
+                    and eligible_hashes[row.hash] == true then
                 existing_files[#existing_files + 1] = row
             end
         end
@@ -656,22 +662,12 @@ function M.syncBooks(opts, mode, cb, before_push)
     local logger = require("logger")
     logger.info("WebDavSync syncBooks: mode=" .. tostring(mode))
     if mode == "push" then
-        if opts.full_push then
-            -- A manual full push first refreshes cloud_present flags, then
-            -- reconciles every eligible local row rather than relying on the
-            -- incremental watermark.
-            M.pullBooks(opts, function(pull_ok, pull_msg, pull_status)
-                if not pull_ok then
-                    if cb then cb(false, pull_msg, pull_status) end
-                    return
-                end
-                if before_push then before_push() end
-                M.pushChangedBooks(opts, cb)
-            end)
-        else
-            if before_push then before_push() end
-            M.pushChangedBooks(opts, cb)
-        end
+        -- Push must never begin with a catalog pull. Besides being needless
+        -- for the strict home-directory snapshot used by a full push, doing
+        -- so can merge recently deleted cloud rows back into the local index
+        -- before their tombstones are published.
+        if before_push then before_push() end
+        M.pushChangedBooks(opts, cb)
     elseif mode == "pull" then
         M.pullBooks(opts, cb)
     else

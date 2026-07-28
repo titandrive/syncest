@@ -1394,9 +1394,9 @@ function M.handleHold(item, opts)
                                         title                = row.title,
                                         cloud_present        = 0,
                                         local_present        = row.local_present,
+                                        deleted_at           = now,
                                         updated_at           = now,
                                         _force_cloud_present = true,
-                                        _clear_fields        = { "deleted_at" },
                                     })
                                     M.refresh()
                                 else

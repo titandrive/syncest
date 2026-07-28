@@ -29,6 +29,10 @@ end
 local function local_row_updated_at(store, row, now_ms)
     local existing = store and store:_getRowRaw(row.hash)
     if not existing then return now_ms end
+    if existing.deleted_at ~= nil
+            or tonumber(existing.local_present) ~= 1 then
+        return now_ms
+    end
     local fields = {
         "title", "author", "format", "metadata_json", "file_path",
         "local_present",
@@ -165,6 +169,7 @@ function M.lightScan(opts)
                     hash = row.hash,
                     title = row.title,
                     local_present = 0,
+                    _force_local_present = true,
                 })
                 stale = stale + 1
             end
@@ -202,6 +207,7 @@ function M.lightScan(opts)
                     local_present = 1,
                     last_read_at = item.time and (item.time * 1000) or nil,
                     created_at   = now_ms,
+                    _clear_fields = { "deleted_at" },
                 }
                 local_row.updated_at = local_row_updated_at(
                     store, local_row, now_ms)
@@ -339,6 +345,7 @@ function M.dirScan(opts)
                                     file_path     = full,
                                     local_present = 1,
                                     created_at    = now_ms,
+                                    _clear_fields = { "deleted_at" },
                                 }
                                 local_row.updated_at = local_row_updated_at(
                                     store, local_row, now_ms)
