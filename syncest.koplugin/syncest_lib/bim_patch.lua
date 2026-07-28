@@ -25,6 +25,7 @@ local M = {}
 
 local _bim_patched = false
 local _list_item_patched = false
+local _mosaic_archive_patched = false
 local _orig_get_book_info = nil  -- captured pre-patch; needed by list_strip
 
 -- Tracks file_paths that came from our LibraryStore (= entries we
@@ -38,6 +39,7 @@ local _library_local_paths = {}
 -- here so the patches can read it without a circular libraryitem import.
 M.CLOUD_ONLY_FLAG = "_readest_cloud_only"
 M.LOCAL_ONLY_FLAG = "_readest_local_only"
+M.ARCHIVED_FLAG   = "_readest_archived"
 
 function M.register_local_path(path)
     _library_local_paths[path] = true
@@ -202,6 +204,67 @@ local function patch_list_menu_item()
     logger.info("ReadestLibrary: patched ListMenuItem update + paintTo")
 end
 
+-- Zen UI normally paints a "New" ribbon for cloud-only synthetic entries.
+-- Archived books use the same cover pipeline, but need a distinct label.
+-- Paint our own banner after the active cover renderer, so this works with
+-- stock KOReader, Zen UI, and other cover-browser patches alike.
+local function patch_mosaic_archive_banner()
+    if _mosaic_archive_patched then return end
+    local debug = require("debug")
+    local ok_menu, MosaicMenu = pcall(require, "mosaicmenu")
+    if not ok_menu or type(MosaicMenu._updateItemsBuildUI) ~= "function" then
+        return
+    end
+    local MosaicMenuItem
+    for i = 1, 50 do
+        local name, val = debug.getupvalue(MosaicMenu._updateItemsBuildUI, i)
+        if not name then break end
+        if name == "MosaicMenuItem" and type(val) == "table" then
+            MosaicMenuItem = val
+            break
+        end
+    end
+    if not MosaicMenuItem or type(MosaicMenuItem.paintTo) ~= "function" then
+        logger.warn("ReadestLibrary: couldn't locate MosaicMenuItem for archive banner")
+        return
+    end
+
+    local Blitbuffer = require("ffi/blitbuffer")
+    local CornerBanner = require("syncest_lib.corner_banner")
+    local _ = require("gettext")
+    local orig_paint = MosaicMenuItem.paintTo
+    function MosaicMenuItem:paintTo(bb, x, y)
+        orig_paint(self, bb, x, y)
+        if not (self.entry and self.entry[M.ARCHIVED_FLAG]) then return end
+        local target = self._cover_frame
+            or (self[1] and self[1][1] and self[1][1][1])
+        if not (target and target.dimen and target.dimen.w
+                and target.dimen.h and target.dimen.y) then
+            return
+        end
+        local border = target.bordersize or 0
+        local cover_left = x + math.floor((self.width - target.dimen.w) / 2)
+        local eff_size = math.max(1, math.floor(target.dimen.w * 0.14))
+        local span = math.floor(eff_size * 2.5)
+        local band_thick = math.floor(span * 0.35)
+        local font_size = math.max(6, math.floor(eff_size * 0.25))
+        CornerBanner.paint(
+            bb, cover_left, cover_left + target.dimen.w,
+            target.dimen.y, target.dimen.h,
+            span, band_thick, _("Archived"), font_size,
+            Blitbuffer.COLOR_BLACK, Blitbuffer.COLOR_WHITE)
+        if border > 0 then
+            local color = target.bordercolor or Blitbuffer.COLOR_BLACK
+            bb:paintRect(cover_left, target.dimen.y, target.dimen.w, border, color)
+            bb:paintRect(
+                cover_left + target.dimen.w - border,
+                target.dimen.y, border, target.dimen.h, color)
+        end
+    end
+    _mosaic_archive_patched = true
+    logger.info("ReadestLibrary: patched MosaicMenuItem archive banner")
+end
+
 function M.install(opts)
     M._opts = opts or {}
     cloud_covers.set_opts(M._opts)
@@ -212,6 +275,7 @@ function M.install(opts)
     -- Both patches are idempotent so the order + repeated calls are
     -- safe. ListMenuItem first since it doesn't need BIM.
     patch_list_menu_item()
+    patch_mosaic_archive_banner()
     patch_bim()
 end
 

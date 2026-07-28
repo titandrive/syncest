@@ -24,6 +24,7 @@ local M = {}
 -- them; the bim_patch list-row patches read them via M.<flag>.
 M.CLOUD_ONLY_FLAG = bim_patch.CLOUD_ONLY_FLAG
 M.LOCAL_ONLY_FLAG = bim_patch.LOCAL_ONLY_FLAG
+M.ARCHIVED_FLAG   = bim_patch.ARCHIVED_FLAG
 
 -- ---------------------------------------------------------------------------
 -- Lifecycle delegates
@@ -190,6 +191,12 @@ function M.entry_from_row(row, _opts)
         -- backing row, so downloads still use the correct extension.
         entry.file = cloud_covers.URI_PREFIX .. row.hash .. ".png"
         entry[M.CLOUD_ONLY_FLAG] = true
+        if row.archived_path then
+            entry[M.ARCHIVED_FLAG] = true
+            -- Zen UI consults this before deriving "new" from the synthetic
+            -- cloud URI. The Syncest overlay paints the accurate label.
+            entry._zen_effective_status = "reading"
+        end
         -- Same _no_provider treatment as the local branch.
         entry.mandatory = ext
         -- Stash title/author by hash so the patched BIM (keyed by URI
