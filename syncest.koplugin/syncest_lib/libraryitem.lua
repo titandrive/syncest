@@ -183,10 +183,12 @@ function M.entry_from_row(row, _opts)
             entry[M.LOCAL_ONLY_FLAG] = true
         end
     else
-        -- Encode the real extension into the URI so listmenu's
-        -- splitFileNameType returns a non-nil filetype for the right
-        -- column. The patched BIM strips it back off.
-        entry.file = cloud_covers.URI_PREFIX .. row.hash .. "." .. ext
+        -- This is a cover-rendering URI, not the book's remote filename.
+        -- Give it an image suffix so third-party MosaicMenu patches (notably
+        -- Zen UI's folder-cover patch) don't disable cover rendering for it.
+        -- The real book format is carried separately in `mandatory` and the
+        -- backing row, so downloads still use the correct extension.
+        entry.file = cloud_covers.URI_PREFIX .. row.hash .. ".png"
         entry[M.CLOUD_ONLY_FLAG] = true
         -- Same _no_provider treatment as the local branch.
         entry.mandatory = ext

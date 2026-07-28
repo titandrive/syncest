@@ -692,6 +692,10 @@ function M._open(opts, internal)
 
     menu = Menu:new{
         name             = "readest_library",
+        -- Zen UI's folder-cover patch treats unknown menus as non-file-manager
+        -- views and disables EPUB cover images in MosaicMenu. This marker is
+        -- the compatibility contract Zen uses for its own cover-grid tabs.
+        _zen_tab_id      = "syncest_library",
         is_borderless    = true,
         is_popout        = false,
         covers_fullscreen = true,
