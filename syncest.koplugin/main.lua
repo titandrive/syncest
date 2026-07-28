@@ -2726,32 +2726,6 @@ function Syncest:addToMainMenu(menu_items)
                     },
                     {
                         text_func = function()
-                            return T(_("Progress history entries per type: %1"),
-                                tostring(self.settings.progress_history_count or 25))
-                        end,
-                        sub_item_table_func = function()
-                            local choices = {}
-                            for _, count in ipairs({10, 25}) do
-                                local selected_count = count
-                                choices[#choices + 1] = {
-                                    text = tostring(selected_count),
-                                    checked_func = function()
-                                        return (self.settings.progress_history_count or 25)
-                                            == selected_count
-                                    end,
-                                    callback = function()
-                                        self.settings.progress_history_count =
-                                            selected_count
-                                        G_reader_settings:saveSetting(
-                                            "webdav_sync", self.settings)
-                                    end,
-                                }
-                            end
-                            return choices
-                        end,
-                    },
-                    {
-                        text_func = function()
                             local n = self.settings.push_page_interval or 1
                             if n == 1 then
                                 return T(_("Push every %1 page turn (hold to change)"), n)
@@ -3222,6 +3196,147 @@ local function progress_history_entry_text(entry)
     return table.concat(parts, " · ")
 end
 
+function Syncest:_showProgressHistorySettings(history_menu, entries)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local dialog
+    local function refresh_history()
+        UIManager:close(dialog)
+        UIManager:close(history_menu)
+        self:_showProgressHistoryEntries(entries)
+    end
+    dialog = ButtonDialog:new{
+        title = _("Progress history settings"),
+        buttons = {
+            {
+                {
+                    text = T(_("History entries per type: %1"),
+                        tostring(self.settings.progress_history_count or 25)),
+                    callback = function()
+                        local count_dialog
+                        count_dialog = ButtonDialog:new{
+                            title = _("History entries per type"),
+                            buttons = {
+                                {
+                                    {
+                                        text = "10",
+                                        callback = function()
+                                            self.settings.progress_history_count = 10
+                                            G_reader_settings:saveSetting(
+                                                "webdav_sync", self.settings)
+                                            UIManager:close(count_dialog)
+                                            refresh_history()
+                                        end,
+                                    },
+                                    {
+                                        text = "25",
+                                        callback = function()
+                                            self.settings.progress_history_count = 25
+                                            G_reader_settings:saveSetting(
+                                                "webdav_sync", self.settings)
+                                            UIManager:close(count_dialog)
+                                            refresh_history()
+                                        end,
+                                    },
+                                },
+                            },
+                        }
+                        UIManager:show(count_dialog)
+                    end,
+                },
+            },
+            {
+                {
+                    text = T(_("Device name: %1"),
+                        progress_history_device_name(self.settings)),
+                    callback = function()
+                        local InputDialog = require("ui/widget/inputdialog")
+                        local input
+                        local function save_name(value)
+                            value = type(value) == "string"
+                                and value:match("^%s*(.-)%s*$") or ""
+                            self.settings.progress_history_device_name =
+                                value ~= "" and value or nil
+                            G_reader_settings:saveSetting(
+                                "webdav_sync", self.settings)
+                            local device_id =
+                                progress_history_device_id(self.settings)
+                            local device_name =
+                                progress_history_device_name(self.settings)
+                            for _, entry in ipairs(entries or {}) do
+                                if tostring(entry.deviceId or "") ==
+                                        tostring(device_id) then
+                                    entry.deviceName = device_name
+                                end
+                            end
+                            local book_hash = self:getBookIdentifiers()
+                            local server = self.settings.sync_server
+                            if book_hash and type(server) == "table" then
+                                self:_runBackgroundJSON(
+                                    "background progress history device rename",
+                                    "syncest_progress_history_device_rename",
+                                    function()
+                                        local Client = require("webdav_syncclient")
+                                        local client = Client:new{ server = server }
+                                        return {
+                                            success = client:
+                                                updateProgressHistoryDeviceName(
+                                                    book_hash, device_id,
+                                                    device_name),
+                                        }
+                                    end,
+                                    function() end,
+                                    function()
+                                        logger.warn(
+                                            "Syncest progress history device rename failed")
+                                    end)
+                            end
+                            UIManager:close(input)
+                            refresh_history()
+                        end
+                        input = InputDialog:new{
+                            title = _("Device name"),
+                            input = self.settings.progress_history_device_name
+                                or progress_history_device_name(self.settings),
+                            input_hint = _("For example: Palma or Pixel Fold"),
+                            buttons = {
+                                {
+                                    {
+                                        text = _("Cancel"),
+                                        id = "close",
+                                        callback = function()
+                                            UIManager:close(input)
+                                        end,
+                                    },
+                                    {
+                                        text = _("Use default"),
+                                        callback = function() save_name("") end,
+                                    },
+                                    {
+                                        text = _("Save"),
+                                        is_enter_default = true,
+                                        callback = function()
+                                            save_name(input:getInputText())
+                                        end,
+                                    },
+                                },
+                            },
+                        }
+                        UIManager:show(input)
+                        input:onShowKeyboard()
+                    end,
+                },
+            },
+            {
+                {
+                    text = _("Close"),
+                    callback = function() UIManager:close(dialog) end,
+                },
+            },
+        },
+    }
+    UIManager:show(dialog)
+end
+
 function Syncest:_showProgressHistoryEntries(entries)
     local filter = self.settings.progress_history_filter or "both"
     local count = math.max(1, tonumber(self.settings.progress_history_count) or 25)
@@ -3258,6 +3373,10 @@ function Syncest:_showProgressHistoryEntries(entries)
             if timestamp > 100000000000 then timestamp = math.floor(timestamp / 1000) end
             local source = entry_source == "manual" and _("Manual") or _("Automatic")
             local device = entry.deviceName or entry.deviceId or _("Unknown device")
+            if tostring(entry.deviceId or "") == tostring(
+                    progress_history_device_id(self.settings)) then
+                device = progress_history_device_name(self.settings)
+            end
             item_table[#item_table + 1] = {
                 text = progress_history_entry_text(entry)
                     .. " · " .. os.date("%Y-%m-%d %H:%M", timestamp)
@@ -3288,6 +3407,11 @@ function Syncest:_showProgressHistoryEntries(entries)
             .. _("Current") .. ": " .. current_location,
         title_multilines = true,
         title_shrink_font_to_fit = true,
+        title_bar_left_icon = "appbar.settings",
+        onLeftButtonTap = function()
+            self:_showProgressHistorySettings(menu, entries)
+            return true
+        end,
         is_borderless = true,
         is_popout = false,
         item_table = item_table,

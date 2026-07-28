@@ -808,6 +808,22 @@ function WebDavSyncClient:pullProgressHistory(book_hash)
     return combined
 end
 
+function WebDavSyncClient:updateProgressHistoryDeviceName(
+        book_hash, device_id, device_name)
+    if not book_hash or not device_id or not device_name then return false end
+    device_id = tostring(device_id):gsub("[^%w_.%-]", "_")
+    if device_id == "" then return false end
+    local device_path = progress_history_path(book_hash, device_id .. ".json")
+    local remote, status = self:_readJSON(device_path)
+    if remote == nil then return status == READ_MISSING end
+    remote.deviceId = device_id
+    remote.deviceName = tostring(device_name)
+    for _, entry in ipairs(remote.entries or {}) do
+        if type(entry) == "table" then entry.deviceName = tostring(device_name) end
+    end
+    return self:_writeJSON(device_path, remote)
+end
+
 function WebDavSyncClient:pushChanges(changes, callback)
     logger.info("WebDavSyncClient pushChanges: configs="
         .. tostring(changes.configs and #changes.configs or 0)
