@@ -3889,6 +3889,7 @@ function Syncest:syncBooksLibrary(mode, interactive, confirmed)
     local archive_settings = LuaSettings:open(
         DataStorage:getSettingsDir() .. "/move_to_archive_settings.lua")
     local archive_dir = archive_settings:readSetting("archive_dir")
+        or archive_settings:readSetting("archive_dir_path")
     local archive_original_dirs =
         archive_settings:readSetting("library_archive_original_dirs") or {}
 

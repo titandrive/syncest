@@ -228,12 +228,13 @@ local BOOK_EXTS = {
     lit=true, pdb=true, lrf=true, kfx=true, zip=true,
 }
 
-function M.bookHashesInDir(root)
+function M.bookPathsByHashInDir(root)
     local lfs = require("libs/libkoreader-lfs")
     local DocSettings = require("docsettings")
-    local hashes = {}
+    local util = require("util")
+    local paths = {}
     if not root or root == "" or lfs.attributes(root, "mode") ~= "directory" then
-        return hashes
+        return paths
     end
 
     local stack = { root }
@@ -255,13 +256,25 @@ function M.bookHashesInDir(root)
                             if ok and doc_settings then
                                 local hash = doc_settings:readSetting(
                                     "partial_md5_checksum")
-                                if hash and hash ~= "" then hashes[hash] = true end
+                                if not hash or hash == "" then
+                                    local ok_hash, computed = pcall(util.partialMD5, full)
+                                    if ok_hash then hash = computed end
+                                end
+                                if hash and hash ~= "" then paths[hash] = full end
                             end
                         end
                     end
                 end
             end
         end
+    end
+    return paths
+end
+
+function M.bookHashesInDir(root)
+    local hashes = {}
+    for hash in pairs(M.bookPathsByHashInDir(root)) do
+        hashes[hash] = true
     end
     return hashes
 end

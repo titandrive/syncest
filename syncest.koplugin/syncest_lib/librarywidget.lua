@@ -38,6 +38,56 @@ M._opts           = nil  -- last-used opts; needed for refresh after view-menu c
 M._menu           = nil
 M._search         = nil  -- transient per-session search query; never persisted to disk
 M._group_path     = nil  -- transient: nil = root; "Fantasy/Tolkien" when drilled in
+M._archive_dir    = nil
+M._archive_paths  = {}
+M._archive_original_dirs = {}
+M._archive_settings = nil
+
+local function refresh_archive_index()
+    local DataStorage = require("datastorage")
+    local LuaSettings = require("luasettings")
+    local lfs = require("libs/libkoreader-lfs")
+    local settings = LuaSettings:open(
+        DataStorage:getSettingsDir() .. "/move_to_archive_settings.lua")
+    -- The user patch and KOReader plugin use different keys. Respect the
+    -- configured value from either implementation; never assume /archive.
+    local archive_dir = settings:readSetting("archive_dir")
+        or settings:readSetting("archive_dir_path")
+    if type(archive_dir) == "string" then
+        archive_dir = archive_dir:gsub("/+$", "")
+    end
+    M._archive_settings = settings
+    M._archive_original_dirs =
+        settings:readSetting("library_archive_original_dirs") or {}
+    if not archive_dir or archive_dir == ""
+            or lfs.attributes(archive_dir, "mode") ~= "directory" then
+        M._archive_dir = nil
+        M._archive_paths = {}
+        return
+    end
+    M._archive_dir = archive_dir
+    M._archive_paths = localscanner.bookPathsByHashInDir(archive_dir)
+end
+
+local function decorate_archive_row(row)
+    local archived_path = row and M._archive_paths[row.hash]
+    if not archived_path then return row end
+    local copy = {}
+    for key, value in pairs(row) do copy[key] = value end
+    copy.archived_path = archived_path
+
+    -- An archived copy is intentionally not the active on-device library
+    -- copy. Preserve a separate real local copy if one exists elsewhere.
+    local lfs = require("libs/libkoreader-lfs")
+    local has_regular_copy = type(copy.file_path) == "string"
+        and copy.file_path ~= archived_path
+        and lfs.attributes(copy.file_path, "mode") == "file"
+    if not has_regular_copy then
+        copy.local_present = 0
+        copy.file_path = nil
+    end
+    return copy
+end
 
 -- ---------------------------------------------------------------------------
 -- check_renderer_compat: signature + smoke test from the eng review.
@@ -205,6 +255,7 @@ local function build_item_table(store, settings, search)
         local rows = store:listBooks(get_filters(settings, search))
         local items = {}
         for i, row in ipairs(rows) do
+            row = decorate_archive_row(row)
             items[i] = libraryitem.entry_from_row(row)
         end
         return add_search_back(items)
@@ -243,6 +294,7 @@ local function build_item_table(store, settings, search)
         }
     end
     for _i, row in ipairs(books) do
+        row = decorate_archive_row(row)
         merged[#merged + 1] = {
             entry = libraryitem.entry_from_row(row),
             sort_value = b_value(row),
@@ -618,6 +670,7 @@ function M._open(opts, internal)
         G_reader_settings:saveSetting("webdav_sync", opts.settings)
     end
     local store = ensure_store(opts.settings)
+    refresh_archive_index()
 
     -- Renderer compatibility check (codex round 2 finding 3)
     local ok, why = M.check_renderer_compat()
@@ -824,6 +877,82 @@ function M.refreshAfterDownload(callback)
     end)
 end
 
+local function unarchiveBook(row, opts)
+    local archived_path = row and row.archived_path
+    local lfs = require("libs/libkoreader-lfs")
+    if type(archived_path) ~= "string"
+            or lfs.attributes(archived_path, "mode") ~= "file" then
+        UIManager:show(InfoMessage:new{
+            text = _("Archived copy could not be found."),
+            timeout = 3,
+        })
+        refresh_archive_index()
+        M.refresh()
+        return false
+    end
+
+    local destination_dir = M._archive_original_dirs[archived_path]
+        or opts.settings.library_download_dir
+        or G_reader_settings:readSetting("download_dir")
+        or G_reader_settings:readSetting("home_dir")
+    if type(destination_dir) == "string" then
+        destination_dir = destination_dir:gsub("/+$", "")
+    end
+    if not destination_dir or destination_dir == ""
+            or destination_dir == M._archive_dir
+            or lfs.attributes(destination_dir, "mode") ~= "directory" then
+        UIManager:show(InfoMessage:new{
+            text = _("Set a valid library download or HOME folder first."),
+            timeout = 3,
+        })
+        return false
+    end
+
+    local util = require("util")
+    local _source_dir, filename = util.splitFilePathName(archived_path)
+    local destination = destination_dir .. "/" .. filename
+    if lfs.attributes(destination, "mode") == "file" then
+        UIManager:show(InfoMessage:new{
+            text = _("A book with this filename already exists in the destination."),
+            timeout = 3,
+        })
+        return false
+    end
+
+    local FileManager = require("apps/filemanager/filemanager")
+    if not FileManager:moveFile(archived_path, destination_dir) then
+        UIManager:show(InfoMessage:new{
+            text = _("Could not move the book out of the archive."),
+            timeout = 3,
+        })
+        return false
+    end
+
+    require("readhistory"):updateItem(archived_path, destination)
+    require("readcollection"):updateItem(archived_path, destination)
+    require("docsettings").updateLocation(archived_path, destination, false)
+    M._archive_original_dirs[archived_path] = nil
+    if M._archive_settings then
+        M._archive_settings:saveSetting(
+            "library_archive_original_dirs", M._archive_original_dirs)
+        M._archive_settings:flush()
+    end
+    M._archive_paths[row.hash] = nil
+    M._store:upsertBook({
+        hash                 = row.hash,
+        title                = row.title,
+        local_present        = 1,
+        file_path            = destination,
+        _force_local_present = true,
+    })
+    M.refreshAfterDownload()
+    UIManager:show(InfoMessage:new{
+        text = _("Book moved out of archive."),
+        timeout = 3,
+    })
+    return true
+end
+
 local function showCloudBookInformation(row)
     local metadata = {}
     if type(row.metadata_json) == "string" then
@@ -919,16 +1048,27 @@ local function showCloudDownloadDialog(row, opts)
         end)
     end
 
+    local primary_buttons = {
+        {
+            text = _("Download"),
+            callback = startDownload,
+        },
+    }
+    if row.archived_path then
+        primary_buttons[#primary_buttons + 1] = {
+            text = _("Unarchive"),
+            callback = function()
+                UIManager:close(dialog)
+                unarchiveBook(row, opts)
+            end,
+        }
+    end
+
     dialog = ButtonDialog:new{
         title = downloadDialogTitle(download_dir, filename),
         title_multilines = true,
         buttons = {
-            {
-                {
-                    text = _("Download"),
-                    callback = startDownload,
-                },
-            },
+            primary_buttons,
             {
                 {
                     text = _("Choose folder"),
@@ -1283,6 +1423,13 @@ function M.handleHold(item, opts)
                     if removeLocalFile(row) then M.refresh() end
                 end,
             })
+        end)
+    end
+
+    if row.archived_path and not on_local then
+        add_row(_("Unarchive"), function()
+            close()
+            unarchiveBook(row, opts)
         end)
     end
 
