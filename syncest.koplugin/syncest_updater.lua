@@ -6,7 +6,7 @@ local _ = require("gettext")
 
 local Updater = {}
 
-local GITHUB_REPO = "titandrive/syncest"
+local GITHUB_REPO = "titandrive/syncest.koplugin"
 local CHECK_INTERVAL = 3600
 
 local cached_version = nil
