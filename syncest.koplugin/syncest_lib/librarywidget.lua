@@ -831,15 +831,29 @@ function M._open(opts, internal)
         menu:updateItems()
     end
 
-    -- Tap on the title bar (anywhere not on the left search icon or the
-    -- right close X) opens the View menu. Stock TitleBar has no
-    -- title_tap_callback hook, so we register a gesture range at the
-    -- Menu level. Children (IconButton, MenuItem cells, footer) get the
-    -- gesture first via WidgetContainer dispatch; only taps that no child
-    -- claims fall through to Menu's onGesture and reach this handler.
-    -- Use a range function so the dimen is read at match time — TitleBar
-    -- only sets dimen.x/y during paintTo, so the value at registration
-    -- isn't reliable on first tap.
+    -- Zen UI installs a generic Menu.onTap handler that opens its top menu
+    -- for taps in the top 5% of the screen. Handle this menu's title first
+    -- at the same event entry point so the two overlapping gesture ranges
+    -- cannot race based on table iteration order.
+    local inherited_on_tap = menu.onTap
+    menu.onTap = function(self, arg, ges_ev)
+        local pos = ges_ev and ges_ev.pos
+        if pos and title_bar.dimen and pos:intersectWith(title_bar.dimen) then
+            local left_dimen = title_bar.left_button and title_bar.left_button.dimen
+            local right_dimen = title_bar.right_button and title_bar.right_button.dimen
+            if not ((left_dimen and pos:intersectWith(left_dimen))
+                    or (right_dimen and pos:intersectWith(right_dimen))) then
+                view_menu_callback()
+                return true
+            end
+        end
+        if inherited_on_tap then
+            return inherited_on_tap(self, arg, ges_ev)
+        end
+    end
+    -- Stock KOReader has no generic Tap event on Menu, so retain a dedicated
+    -- title event as the non-Zen path. With Zen present, either matching event
+    -- now reaches the same view-menu action.
     menu.ges_events.TapTitle = {
         GestureRange:new{
             ges = "tap",

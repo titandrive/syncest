@@ -138,13 +138,20 @@ function M.load_cover_bb(hash, variant)
     if not token then return nil end
 
     local memory_key = hash .. ":" .. variant
-    local memory = _memory_thumbnails[memory_key]
-    if memory and memory.token == token and memory.bb then
-        local copy = copy_bb(memory.bb)
-        if copy then return copy end
-    elseif memory and memory.bb then
-        memory.bb:free()
-        _memory_thumbnails[memory_key] = nil
+    -- ListMenu rebuilds rows frequently and its cover widgets take ownership
+    -- of their blitbuffers. Keep using the fast persistent list thumbnail,
+    -- but decode a fresh owner for each row instead of sharing an in-memory
+    -- master that another rebuild may have already freed.
+    local use_memory = variant ~= "list"
+    local memory = use_memory and _memory_thumbnails[memory_key] or nil
+    if memory then
+        if memory.token == token and memory.bb then
+            local copy = copy_bb(memory.bb)
+            if copy then return copy end
+        elseif memory.bb then
+            memory.bb:free()
+            _memory_thumbnails[memory_key] = nil
+        end
     end
 
     local ok, RenderImage = pcall(require, "ui/renderimage")
@@ -164,6 +171,16 @@ function M.load_cover_bb(hash, variant)
     end
 
     local ok2, bb = pcall(RenderImage.renderImageFile, RenderImage, load_path, false)
+    -- A thumbnail write may have been interrupted, or an older cache entry
+    -- may no longer be readable by the current renderer. The source cover is
+    -- still authoritative, so discard only the broken derived files and
+    -- rebuild them instead of leaving this row as a FakeCover forever.
+    if (not ok2 or not bb) and thumb_path and load_path == thumb_path then
+        os.remove(thumb_path)
+        os.remove(meta_path)
+        load_path = source_path
+        ok2, bb = pcall(RenderImage.renderImageFile, RenderImage, load_path, false)
+    end
     if not ok2 or not bb then return nil end
 
     -- First use after a source change: scale once, persist once.
@@ -185,8 +202,11 @@ function M.load_cover_bb(hash, variant)
         if wrote then write_text(meta_path, token) end
     end
 
-    _memory_thumbnails[memory_key] = { token = token, bb = bb }
-    return copy_bb(bb)
+    if use_memory then
+        _memory_thumbnails[memory_key] = { token = token, bb = bb }
+        return copy_bb(bb)
+    end
+    return bb
 end
 
 local function tag_for(hash)

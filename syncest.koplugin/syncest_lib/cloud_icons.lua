@@ -13,7 +13,7 @@ local M = {}
 local _plugin_root = (function()
     local src = debug.getinfo(1, "S").source or ""
     local path = (src:sub(1, 1) == "@")
-        and src:sub(2):match("^(.*)/library/[^/]+$") or nil
+        and src:sub(2):match("^(.*)/syncest_lib/[^/]+$") or nil
     if path and path:sub(1, 1) ~= "/" then
         local ok, lfs = pcall(require, "libs/libkoreader-lfs")
         local cwd = ok and lfs and lfs.currentdir()
@@ -50,6 +50,7 @@ local function get_widget(kind, target_size)
     if not file then return nil end
     local ok, ImageWidget = pcall(require, "ui/widget/imagewidget")
     if not ok then return nil end
+    local Screen = require("device").screen
     local widget = ImageWidget:new{
         file = file,
         width = target_size,
@@ -57,32 +58,35 @@ local function get_widget(kind, target_size)
         scale_factor = 0,  -- aspect-preserving fit
         alpha = true,      -- preserve SVG transparency
         is_icon = true,
+        -- The whole UI buffer is inverted afterward in night mode. Invert
+        -- this white asset once here too, so the final on-screen icon remains
+        -- white in both day and night themes.
+        invert = Screen.night_mode,
     }
     _cache[kind] = { widget = widget, size_loaded = target_size }
     return widget
 end
 
--- Paint the cloud icon at the right edge of the row, in the slot
--- where ListMenuItem normally draws its second line of right-side
--- text (wpageinfo, e.g. "1% of 1424 pages"). For row height dimen.h,
--- the standard wright VerticalGroup is roughly:
---   VerticalSpan(2) + fileinfo(~h*0.28) + pageinfo(~h*0.28)
--- center-aligned, which lands pageinfo at ~y + 0.5*h. Mirroring that
--- keeps the format label and the cloud icon visually stacked at the
--- right edge with consistent padding.
+-- Paint an icon at an exact position.
+function M.paint_at(bb, icon_x, icon_y, target_size, kind)
+    local icon = get_widget(kind, target_size)
+    if not icon then return end
+    icon:_render()
+    icon:paintTo(bb, icon_x, icon_y)
+end
+
+-- Paint the cloud state over the list thumbnail. ListMenu reserves a square
+-- thumbnail slot whose width matches the row height; using half that height
+-- makes the state immediately visible without obscuring the whole cover.
 function M.paint(item, bb, x, y, kind)
-    local Screen = require("device").screen
-    local icon_size = math.floor(item.height * 0.28)
+    local icon_size = math.floor(item.height * 0.50)
     local icon = get_widget(kind, icon_size)
     if not icon then return end
-    -- _render so getSize returns the actual scaled dims, not the
-    -- requested width/height.
     icon:_render()
     local s = icon:getSize()
-    local pad_right = Screen:scaleBySize(10)
-    local icon_x = x + item.width - pad_right - s.w
-    local icon_y = y + math.floor(item.height * 0.5)
-    icon:paintTo(bb, icon_x, icon_y)
+    local icon_x = x + math.floor((item.height - s.w) / 2)
+    local icon_y = y + math.floor((item.height - s.h) / 2)
+    M.paint_at(bb, icon_x, icon_y, icon_size, kind)
 end
 
 return M

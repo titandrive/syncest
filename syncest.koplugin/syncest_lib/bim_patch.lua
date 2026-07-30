@@ -184,7 +184,37 @@ local function patch_list_menu_item()
                 orig_getBookInfo   = _orig_get_book_info,
             })
         end
-        return orig_update(self)
+        if self._readest_cloud_cover then
+            self._readest_cloud_cover:free()
+            self._readest_cloud_cover = nil
+        end
+        local result = orig_update(self)
+        -- ListMenu may reject a perfectly valid synthetic cloud cover during
+        -- its cached-cover validation and replace it with a FakeCover. Keep
+        -- that stock layout for metadata, then paint our validated persistent
+        -- thumbnail directly into the reserved square cover slot.
+        if self.entry and self.entry[M.CLOUD_ONLY_FLAG]
+                and type(self.entry.file) == "string" then
+            local hash = cloud_covers.hash_from_uri(self.entry.file)
+            local cover_bb = hash and cloud_covers.load_cover_bb(hash, "list")
+            if cover_bb then
+                local ok_iw, ImageWidget = pcall(require, "ui/widget/imagewidget")
+                if ok_iw then
+                    local slot = math.max(1, self.height - 2)
+                    local scale = math.min(
+                        slot / cover_bb:getWidth(),
+                        slot / cover_bb:getHeight())
+                    self._readest_cloud_cover = ImageWidget:new{
+                        image = cover_bb,
+                        scale_factor = scale,
+                    }
+                    self._readest_cloud_cover:_render()
+                else
+                    cover_bb:free()
+                end
+            end
+        end
+        return result
     end
 
     -- Cloud icon overlay painted on top of the standard widget tree.
@@ -194,20 +224,34 @@ local function patch_list_menu_item()
     function ListMenuItem:paintTo(bb, x, y)
         orig_paint(self, bb, x, y)
         if not self.entry then return end
+        if self._readest_cloud_cover then
+            local size = self._readest_cloud_cover:getSize()
+            self._readest_cloud_cover:paintTo(
+                bb,
+                x + math.floor((self.height - size.w) / 2),
+                y + math.floor((self.height - size.h) / 2))
+        end
         if self.entry[M.CLOUD_ONLY_FLAG] and cloud_icons.has_icon("dl") then
             cloud_icons.paint(self, bb, x, y, "dl")
         elseif self.entry[M.LOCAL_ONLY_FLAG] and cloud_icons.has_icon("up") then
             cloud_icons.paint(self, bb, x, y, "up")
         end
     end
+    local orig_free = ListMenuItem.free
+    function ListMenuItem:free(...)
+        if self._readest_cloud_cover then
+            self._readest_cloud_cover:free()
+            self._readest_cloud_cover = nil
+        end
+        if orig_free then return orig_free(self, ...) end
+    end
     _list_item_patched = true
     logger.info("ReadestLibrary: patched ListMenuItem update + paintTo")
 end
 
--- Zen UI normally paints a "New" ribbon for cloud-only synthetic entries.
--- Archived books use the same cover pipeline, but need a distinct label.
--- Paint our own banner after the active cover renderer, so this works with
--- stock KOReader, Zen UI, and other cover-browser patches alike.
+-- Add cloud-state icons and the archived banner after the active mosaic cover
+-- renderer, so both overlays work with stock KOReader, Zen UI, and other
+-- cover-browser patches alike.
 local function patch_mosaic_archive_banner()
     if _mosaic_archive_patched then return end
     local debug = require("debug")
@@ -234,8 +278,28 @@ local function patch_mosaic_archive_banner()
     local _ = require("gettext")
     local orig_paint = MosaicMenuItem.paintTo
     function MosaicMenuItem:paintTo(bb, x, y)
+        -- Zen UI reserves a title strip below the cover but the stock
+        -- CenterContainer vertically centers shorter covers in the remaining
+        -- area. Bottom-align Syncest covers in that area so aspect-ratio
+        -- differences don't create a large, variable cover-to-title gap.
+        local cover_container = self.menu
+            and self.menu.name == "readest_library"
+            and self._underline_container
+            and self._underline_container[1]
+        local center_paint = cover_container and cover_container.paintTo
+        if center_paint and cover_container.dimen and cover_container[1]
+                and cover_container[1].getSize then
+            cover_container.paintTo = function(container, target_bb, cx, cy)
+                local child_size = container[1]:getSize()
+                local spare = math.max(0,
+                    (container.dimen.h or 0) - (child_size.h or 0))
+                return center_paint(
+                    container, target_bb, cx, cy + math.floor(spare / 2))
+            end
+        end
         orig_paint(self, bb, x, y)
-        if not (self.entry and self.entry[M.ARCHIVED_FLAG]) then return end
+        if center_paint then cover_container.paintTo = center_paint end
+        if not self.entry then return end
         local target = self._cover_frame
             or (self[1] and self[1][1] and self[1][1][1])
         if not (target and target.dimen and target.dimen.w
@@ -244,6 +308,22 @@ local function patch_mosaic_archive_banner()
         end
         local border = target.bordersize or 0
         local cover_left = x + math.floor((self.width - target.dimen.w) / 2)
+        local icon_kind
+        if self.entry[M.CLOUD_ONLY_FLAG] then
+            icon_kind = "dl"
+        elseif self.entry[M.LOCAL_ONLY_FLAG] then
+            icon_kind = "up"
+        end
+        if icon_kind and cloud_icons.has_icon(icon_kind) then
+            local icon_size = math.max(8, math.floor(target.dimen.w * 0.20))
+            local icon_pad = math.max(2, math.floor(target.dimen.w * 0.04))
+            cloud_icons.paint_at(
+                bb,
+                cover_left + target.dimen.w - icon_pad - icon_size,
+                target.dimen.y + target.dimen.h - icon_pad - icon_size,
+                icon_size, icon_kind)
+        end
+        if not self.entry[M.ARCHIVED_FLAG] then return end
         local eff_size = math.max(1, math.floor(target.dimen.w * 0.14))
         local span = math.floor(eff_size * 2.5)
         local band_thick = math.floor(span * 0.35)
