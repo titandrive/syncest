@@ -17,6 +17,7 @@ local NetworkMgr   = require("ui/network/manager")
 local TitleBar     = require("ui/widget/titlebar")
 local Trapper      = require("ui/trapper")
 local UIManager    = require("ui/uimanager")
+local VerticalSpan = require("ui/widget/verticalspan")
 local logger       = require("logger")
 local _            = require("syncest_i18n")
 
@@ -758,6 +759,19 @@ function M._open(opts, internal)
         left_icon_tap_callback  = function() handleSearch(menu, store, opts.settings) end,
         close_callback          = function() if menu then menu:onClose() end end,
     }
+    -- Zen UI may rebuild the TitleBar's internal title group, which discards
+    -- title_top_padding. Offset the whole rendered bar instead and reserve the
+    -- same amount in its reported height so list and mosaic content also move
+    -- down without overlapping it.
+    local title_bar_offset = Screen:scaleBySize(24)
+    local title_content_gap = Screen:scaleBySize(8)
+    local title_reserved_space = title_bar_offset + title_content_gap
+    title_bar.titlebar_height = title_bar.titlebar_height + title_reserved_space
+    title_bar.dimen.h = title_bar.dimen.h + title_reserved_space
+    local original_title_bar_paint = title_bar.paintTo
+    title_bar.paintTo = function(self, bb, x, y)
+        return original_title_bar_paint(self, bb, x, y + title_bar_offset)
+    end
     -- Compute the orientation-appropriate per-page count up front and
     -- pass it as items_per_page. Menu's native _recalculateDimen
     -- (menu.lua:648) uses items_per_page; MosaicMenu's mixin uses
@@ -820,7 +834,15 @@ function M._open(opts, internal)
         local orig_update = menu.updateItems
         menu.updateItems = function(self, ...)
             libraryitem.set_visible_hashes(self)
-            return orig_update(self, ...)
+            local result = orig_update(self, ...)
+            if view_mode == "list" and self.item_group then
+                table.insert(self.item_group, 1, VerticalSpan:new{
+                    width = Screen:scaleBySize(12),
+                })
+                self.item_group:resetLayout()
+                if self.content_group then self.content_group:resetLayout() end
+            end
+            return result
         end
 
         -- Menu:new() ran the stock list renderer before we installed the
