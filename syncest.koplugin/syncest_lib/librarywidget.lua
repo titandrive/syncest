@@ -22,6 +22,7 @@ local logger       = require("logger")
 local _            = require("syncest_i18n")
 
 local LibraryStore   = require("syncest_lib.librarystore")
+local cloud_covers   = require("syncest_lib.cloud_covers")
 local libraryitem    = require("syncest_lib.libraryitem")
 local librarypaint   = require("syncest_lib.librarypaint")
 local localscanner   = require("syncest_lib.localscanner")
@@ -791,6 +792,16 @@ function M._open(opts, internal)
     local portrait  = Screen:getWidth() <= Screen:getHeight()
     local items_per_page = portrait and (nb_cols_p * nb_rows_p) or (nb_cols_l * nb_rows_l)
 
+    local function run_book_interaction(kind, callback)
+        local interaction_ok, interaction_err = xpcall(callback, debug.traceback)
+        if interaction_ok then return end
+        logger.err("Syncest Library " .. kind .. " failed:\n" .. tostring(interaction_err))
+        UIManager:show(InfoMessage:new{
+            text = _("Book interaction failed."),
+            timeout = 3,
+        })
+    end
+
     menu = Menu:new{
         name             = "readest_library",
         -- Zen UI's folder-cover patch treats unknown menus as non-file-manager
@@ -810,10 +821,14 @@ function M._open(opts, internal)
         nb_cols_landscape = nb_cols_l,
         nb_rows_landscape = nb_rows_l,
         onMenuSelect     = function(_self, item)
-            M.handleTap(item, opts)
+            run_book_interaction("tap", function()
+                M.handleTap(item, opts)
+            end)
         end,
         onMenuHold       = function(_self, item)
-            M.handleHold(item, opts)
+            run_book_interaction("hold", function()
+                M.handleHold(item, opts)
+            end)
         end,
     }
     title_bar.show_parent = menu
