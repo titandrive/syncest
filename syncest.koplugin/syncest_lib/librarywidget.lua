@@ -849,12 +849,17 @@ function M._open(opts, internal)
 
     local function run_book_interaction(kind, callback)
         local interaction_ok, interaction_err = xpcall(callback, debug.traceback)
-        if interaction_ok then return end
+        -- CoverMenu/MosaicMenu consult the callback result to decide whether
+        -- the selection was fully handled.  Always consume Syncest rows; if
+        -- this returns nil the stock file-opening path continues after our
+        -- download dialog has already been shown.
+        if interaction_ok then return true end
         logger.err("Syncest Library " .. kind .. " failed:\n" .. tostring(interaction_err))
         UIManager:show(InfoMessage:new{
             text = _("Book interaction failed."),
             timeout = 3,
         })
+        return true
     end
 
     menu = Menu:new{
@@ -876,12 +881,12 @@ function M._open(opts, internal)
         nb_cols_landscape = nb_cols_l,
         nb_rows_landscape = nb_rows_l,
         onMenuSelect     = function(_self, item)
-            run_book_interaction("tap", function()
+            return run_book_interaction("tap", function()
                 M.handleTap(item, opts)
             end)
         end,
         onMenuHold       = function(_self, item)
-            run_book_interaction("hold", function()
+            return run_book_interaction("hold", function()
                 M.handleHold(item, opts)
             end)
         end,
@@ -1176,6 +1181,7 @@ local function showCloudDownloadDialog(row, opts)
                     .. "\n" .. dst_or_err
                     .. "\n\n" .. _("Would you like to read the downloaded book now?"),
                 ok_text = _("Read now"),
+                cancel_text = _("Done"),
                 ok_callback = function()
                     local ReaderUI = require("apps/reader/readerui")
                     M.close()
@@ -1271,6 +1277,16 @@ local function showCloudDownloadDialog(row, opts)
                     text = _("Book information"),
                     callback = function()
                         showCloudBookInformation(row)
+                    end,
+                },
+            },
+            {
+                {
+                    text = _("Cancel"),
+                    id = "close",
+                    callback = function()
+                        UIManager:close(dialog)
+                        return true
                     end,
                 },
             },

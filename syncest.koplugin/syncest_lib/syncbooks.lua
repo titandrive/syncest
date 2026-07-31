@@ -736,7 +736,12 @@ function M.pullBooks(opts, cb)
         local rows    = body and body.books or {}
         local max_ts  = 0
         local upserted = 0
+        local local_snapshot
         if opts.full_refresh and store.resetCatalog then
+            -- A full refresh is a literal catalog replacement. Preserve only
+            -- per-device file identity so it can be joined back to the fresh
+            -- cloud rows by hash; do not retain old cloud metadata.
+            local_snapshot = store:listLocalBooks()
             store:resetCatalog()
         else
             store:clearCloudPresent()
@@ -772,6 +777,30 @@ function M.pullBooks(opts, cb)
                 if remote_deleted_at and remote_deleted_at > max_ts then
                     max_ts = remote_deleted_at
                 end
+            end
+        end
+        for _, local_row in ipairs(local_snapshot or {}) do
+            local fresh = store:_getRowRaw(local_row.hash)
+            if fresh then
+                store:upsertBook({
+                    hash = local_row.hash,
+                    title = fresh.title,
+                    local_present = 1,
+                    file_path = local_row.file_path,
+                    cover_path = local_row.cover_path,
+                    _clear_fields = fresh.deleted_at and { "deleted_at" } or nil,
+                })
+            else
+                -- Local-only rows remain available to explicit Push Books but
+                -- stay invisible in the Cloud Library (cloud_present defaults
+                -- to zero).
+                local restored = {}
+                for key, value in pairs(local_row) do restored[key] = value end
+                restored.cloud_present = 0
+                restored.deleted_at = nil
+                restored._force_cloud_present = true
+                restored._clear_fields = { "deleted_at" }
+                store:upsertBook(restored)
             end
         end
         if max_ts > 0 then store:setLastPulledAt(max_ts) end

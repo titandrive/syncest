@@ -154,6 +154,14 @@ Manual stats pushes and pulls reconcile the complete statistics history. Automat
 
 ## Changelog
 
+### 1.2.1
+
+- Prevent Zen UI's generic cover handler from opening synthetic cloud-cover paths behind Syncest dialogs.
+- Make cloud-only book taps reliably show download options without an Opening overlay, frozen input, or crash when dismissed.
+- Route Syncest grid and list selections through a single owned interaction path while preserving normal local-book opening.
+- Label the post-download choices `Done` and `Read now`.
+- Make Refresh a literal catalog replacement while restoring only device-local file identity by hash, so stale cloud metadata cannot survive a full refresh.
+
 ### 1.2.0
 
 #### Cloud catalog correctness

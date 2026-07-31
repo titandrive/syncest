@@ -26,6 +26,7 @@ local M = {}
 local _bim_patched = false
 local _list_item_patched = false
 local _mosaic_archive_patched = false
+local _reader_uri_guard_patched = false
 local _orig_get_book_info = nil  -- captured pre-patch; needed by list_strip
 
 -- Tracks file_paths that came from our LibraryStore (= entries we
@@ -34,6 +35,50 @@ local _orig_get_book_info = nil  -- captured pre-patch; needed by list_strip
 -- (the format string), keeping right-side text right-aligned with
 -- cloud rows that already use _no_provider.
 local _library_local_paths = {}
+
+-- Cloud and group cover URIs exist only to feed the cover-browser renderer.
+-- Some UI patches treat any entry.file value as a readable document and call
+-- ReaderUI before our library tap handler has finished showing its download
+-- dialog.  Refuse those synthetic paths at the reader boundary so they can
+-- never produce an "Opening" banner or be handed to a document provider.
+local function patch_reader_uri_guard()
+    if _reader_uri_guard_patched then return end
+    local ok, ReaderUI = pcall(require, "apps/reader/readerui")
+    if not ok or not ReaderUI then
+        logger.warn("ReadestLibrary bim_patch: ReaderUI not available")
+        return
+    end
+
+    local function is_synthetic(path)
+        if type(path) ~= "string" then return false end
+        return path:sub(1, #cloud_covers.URI_PREFIX) == cloud_covers.URI_PREFIX
+            or path:sub(1, #group_covers.URI_PREFIX) == group_covers.URI_PREFIX
+    end
+
+    local original_show_reader = ReaderUI.showReader
+    if type(original_show_reader) == "function" then
+        ReaderUI.showReader = function(self, file, ...)
+            if is_synthetic(file) then
+                logger.warn("ReadestLibrary: blocked reader open for synthetic URI", file)
+                return true
+            end
+            return original_show_reader(self, file, ...)
+        end
+    end
+
+    local original_show_reader_coroutine = ReaderUI.showReaderCoroutine
+    if type(original_show_reader_coroutine) == "function" then
+        ReaderUI.showReaderCoroutine = function(self, file, ...)
+            if is_synthetic(file) then
+                logger.warn("ReadestLibrary: blocked reader coroutine for synthetic URI", file)
+                return true
+            end
+            return original_show_reader_coroutine(self, file, ...)
+        end
+    end
+
+    _reader_uri_guard_patched = true
+end
 
 local function load_explicit_cover(path, width, height)
     if type(path) ~= "string" then return nil end
@@ -186,6 +231,20 @@ local function patch_list_menu_item()
         return
     end
 
+    -- Syncest owns selection dispatch for every row in its library. Bypass
+    -- ListMenuItem's stock file action entirely; otherwise a synthetic cover
+    -- path can be acted on after our download dialog is already visible.
+    local orig_tap_select = ListMenuItem.onTapSelect
+    if type(orig_tap_select) == "function" then
+        function ListMenuItem:onTapSelect(...)
+            if self.menu and self.menu.name == "readest_library" then
+                self.menu:onMenuSelect(self.entry)
+                return true
+            end
+            return orig_tap_select(self, ...)
+        end
+    end
+
     -- Custom group-row widget tree (wider cover strip).
     local orig_update = ListMenuItem.update
     function ListMenuItem:update()
@@ -308,6 +367,21 @@ local function patch_mosaic_archive_banner()
     if not MosaicMenuItem or type(MosaicMenuItem.paintTo) ~= "function" then
         logger.warn("ReadestLibrary: couldn't locate MosaicMenuItem for archive banner")
         return
+    end
+
+
+    -- As above, Syncest's menu callback is the sole owner of taps. This wraps
+    -- the final Zen tile class, so Zen's generic pre-open path never sees a
+    -- cloud cover URI. Real local rows still open through M.handleTap.
+    local orig_tap_select = MosaicMenuItem.onTapSelect
+    if type(orig_tap_select) == "function" then
+        function MosaicMenuItem:onTapSelect(...)
+            if self.menu and self.menu.name == "readest_library" then
+                self.menu:onMenuSelect(self.entry)
+                return true
+            end
+            return orig_tap_select(self, ...)
+        end
     end
 
     local Blitbuffer = require("ffi/blitbuffer")
@@ -439,6 +513,7 @@ function M.install(opts)
     patch_list_menu_item()
     patch_mosaic_archive_banner()
     patch_bim()
+    patch_reader_uri_guard()
 end
 
 return M

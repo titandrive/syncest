@@ -3,5 +3,5 @@ return {
     name = "syncest",
     fullname = _("Syncest"),
     description = _([[Syncs reading progress, annotations, stats, and book library to your own WebDAV server.]]),
-    version = "1.2.0",
+    version = "1.2.1",
 }

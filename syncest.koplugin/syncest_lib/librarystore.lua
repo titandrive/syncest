@@ -296,14 +296,12 @@ function M:clearCloudPresent()
     self._groups_cache = {}
 end
 
--- Reset cloud membership before a full authoritative rebuild. Device-local
--- fields (local_present, file_path, downloaded_at, sidecar metadata) must
--- survive: WebDAV cannot tell us which cloud books already exist locally on
--- this particular device. Rows absent from the fetched catalog remain cached
--- but invisible because every Library query requires cloud_present = 1.
+-- Delete the cached catalog for a true authoritative rebuild. The pull layer
+-- snapshots device-local paths first and restores them by hash afterward;
+-- no stale cloud metadata survives this operation.
 function M:resetCatalog()
     local stmt = self.db:prepare(
-        "UPDATE books SET cloud_present = 0 WHERE user_id = ?")
+        "DELETE FROM books WHERE user_id = ?")
     stmt:reset():bind(self.user_id)
     stmt:step()
     stmt:close()

@@ -206,6 +206,10 @@ function M.entry_from_row(row, _opts)
         -- The real book format is carried separately in `mandatory` and the
         -- backing row, so downloads still use the correct extension.
         entry.file = cloud_covers.cover_uri(row.hash)
+        -- The URI above is renderer input only.  Leaving is_file=true makes
+        -- CoverMenu run its built-in document-open path after Syncest shows
+        -- the download dialog, which also triggers Zen's Opening banner.
+        entry.is_file = false
         entry[M.CLOUD_ONLY_FLAG] = true
         -- Zen UI's synthetic URI has no sidecar and would otherwise be
         -- classified as "new", hiding the actual cloud-state distinction.
