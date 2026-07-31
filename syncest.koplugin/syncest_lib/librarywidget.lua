@@ -1349,11 +1349,128 @@ end
 -- handleHold(item, opts) — long-press action sheet
 -- ---------------------------------------------------------------------------
 -- Presence-aware actions for cloud books and their optional local copies.
+local function buildZenHoldHeader(item, row, zen_font)
+    local Screen          = Device.screen
+    local Size            = require("ui/size")
+    local Geom            = require("ui/geometry")
+    local FrameContainer  = require("ui/widget/container/framecontainer")
+    local LeftContainer   = require("ui/widget/container/leftcontainer")
+    local HorizontalGroup = require("ui/widget/horizontalgroup")
+    local HorizontalSpan  = require("ui/widget/horizontalspan")
+    local VerticalGroup   = require("ui/widget/verticalgroup")
+    local VerticalSpan    = require("ui/widget/verticalspan")
+    local TextWidget      = require("ui/widget/textwidget")
+    local ImageWidget     = require("ui/widget/imagewidget")
+
+    -- These are the same measurements used by Zen UI's file context menu.
+    local border = Size.border.thin
+    local gap = Screen:scaleBySize(8)
+    local dialog_w = math.floor(
+        math.min(Screen:getWidth(), Screen:getHeight()) * 0.9)
+    local available_w = dialog_w
+        - 2 * (Size.border.window + Size.padding.button)
+        - 2 * (Size.padding.default + Size.margin.default)
+    local cover_max_h = Screen:scaleBySize(140)
+    local cover_bb
+
+    if row.local_present == 1 and row.file_path then
+        local ok_bim, BookInfoManager = pcall(require, "bookinfomanager")
+        if ok_bim then
+            local info = BookInfoManager:getBookInfo(row.file_path, true)
+            if info and info.cover_bb and info.has_cover and not info.ignore_cover then
+                cover_bb = info.cover_bb:copy()
+            end
+        end
+    elseif item and type(item.file) == "string" then
+        local hash = cloud_covers.hash_from_uri(item.file)
+        if hash then cover_bb = cloud_covers.load_cover_bb(hash, "list") end
+    end
+
+    local font_face = function(size)
+        if zen_font then return zen_font.getFace(size) end
+        return require("ui/font"):getFace("cfont", size)
+    end
+    local text_stack = VerticalGroup:new{ align = "left" }
+    local text_col_w = available_w
+    local cover_widget
+    local header_h
+
+    if cover_bb then
+        local scale = math.min(
+            cover_max_h / cover_bb:getHeight(),
+            math.floor(cover_max_h * 0.72) / cover_bb:getWidth())
+        local rendered_w = math.floor(cover_bb:getWidth() * scale)
+        local rendered_h = math.floor(cover_bb:getHeight() * scale)
+        cover_widget = FrameContainer:new{
+            padding = 0,
+            bordersize = border,
+            ImageWidget:new{
+                image = cover_bb,
+                image_disposable = true,
+                scale_factor = scale,
+            },
+        }
+        header_h = rendered_h + 2 * border
+        text_col_w = math.max(
+            available_w - rendered_w - 2 * border - gap,
+            Screen:scaleBySize(60))
+    end
+
+    table.insert(text_stack, TextWidget:new{
+        text = row.title or "",
+        face = font_face(20),
+        bold = true,
+        max_width = text_col_w,
+    })
+    if row.author and row.author ~= "" then
+        table.insert(text_stack, VerticalSpan:new{ width = Screen:scaleBySize(2) })
+        table.insert(text_stack, TextWidget:new{
+            text = row.author,
+            face = font_face(17),
+            max_width = text_col_w,
+        })
+    end
+    if row.series and row.series ~= "" then
+        table.insert(text_stack, VerticalSpan:new{ width = Screen:scaleBySize(3) })
+        table.insert(text_stack, TextWidget:new{
+            text = row.series,
+            face = font_face(14),
+            max_width = text_col_w,
+        })
+    end
+
+    local text_h = text_stack:getSize().h
+    header_h = math.max(header_h or 0, text_h)
+    local content
+    if cover_widget then
+        content = HorizontalGroup:new{
+            align = "center",
+            cover_widget,
+            HorizontalSpan:new{ width = gap },
+            text_stack,
+        }
+    else
+        content = text_stack
+    end
+    return LeftContainer:new{
+        dimen = Geom:new{ w = available_w, h = header_h },
+        content,
+    }
+end
+
 function M.handleHold(item, opts)
     if not item or not item._readest_row then return end
     local row = item._readest_row
     local ButtonDialog = require("ui/widget/buttondialog")
     local ConfirmBox   = require("ui/widget/confirmbox")
+    -- Match Zen UI's file-browser context menu when it is installed:
+    -- left-aligned Nerd Font icons and the configured library font/size.
+    -- Keep plain-text fallbacks so the cloud library remains standalone.
+    local ok_icons, zen_icons = pcall(require, "common/inline_icon_map")
+    local ok_font, zen_font = pcall(
+        require, "modules/filebrowser/patches/library_font")
+    local zen_font_name = ok_font and zen_font.getFontName()
+    local zen_font_size = ok_font and zen_font.scaleValue(20) or nil
 
     local on_cloud = row.cloud_present == 1
     local lfs = require("libs/libkoreader-lfs")
@@ -1366,8 +1483,20 @@ function M.handleHold(item, opts)
     local function close() UIManager:close(dialog) end
 
     local rows = {}
-    local function add_row(text, cb)
-        rows[#rows + 1] = {{ text = text, callback = cb }}
+    local function add_row(text, cb, icon)
+        local label = text
+        if ok_icons and icon and zen_icons[icon] then
+            label = zen_icons[icon] .. "  " .. text
+        end
+        rows[#rows + 1] = {{
+            text = label,
+            align = "left",
+            font_face = zen_font_name,
+            font_size = zen_font_size,
+            text_font_face = zen_font_name,
+            text_font_size = zen_font_size,
+            callback = cb,
+        }}
     end
 
     -- Cloud delete shared by "Cloud & Device" and "Cloud Only". Removing
@@ -1442,7 +1571,7 @@ function M.handleHold(item, opts)
                     end)
                 end,
             })
-        end)
+        end, "delete")
     end
     if on_cloud then
         add_row(_("Remove from Cloud"), function()
@@ -1477,7 +1606,7 @@ function M.handleHold(item, opts)
                     end)
                 end,
             })
-        end)
+        end, "delete")
     end
     if on_local then
         add_row(_("Remove from Device"), function()
@@ -1490,29 +1619,29 @@ function M.handleHold(item, opts)
                     if removeLocalFile(row) then M.refresh() end
                 end,
             })
-        end)
+        end, "delete")
     end
 
     if row.archived_path and not on_local then
         add_row(_("Unarchive"), function()
             close()
             unarchiveBook(row, opts)
-        end)
+        end, "folder_open")
     end
 
     if on_cloud and not on_local then
         add_row(_("Download Book"), function()
             close()
             downloadBookOnly(row, opts)
-        end)
+        end, "download")
     end
 
     if #rows == 0 then return end
 
+    local header = buildZenHoldHeader(item, row, ok_font and zen_font or nil)
     dialog = ButtonDialog:new{
-        title       = row.title or "",
-        title_align = "center",
-        buttons     = rows,
+        buttons = rows,
+        _added_widgets = { header },
     }
     UIManager:show(dialog)
 end
