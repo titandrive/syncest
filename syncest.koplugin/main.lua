@@ -3791,6 +3791,13 @@ function Syncest:openLibrary()
     })
 end
 
+-- Standard external-launch entry point. Zen UI's custom plugin tabs look for
+-- open/show/launch methods, so exposing this keeps the integration in Syncest
+-- and lets a tab open the cloud library directly instead of the Syncest menu.
+function Syncest:open()
+    return self:openLibrary()
+end
+
 function Syncest:getLibraryStore()
     if not self.settings or not self.settings.user_id
             or self.settings.user_id == "" then return nil end
