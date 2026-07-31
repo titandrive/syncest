@@ -49,6 +49,8 @@ local DEFAULTS = {
     library_group_by       = "groups",
     library_sort_by        = "last_read_at",
     library_sort_ascending = false,
+    library_show_cloud     = true,
+    library_show_local     = true,
 }
 
 -- ---------------------------------------------------------------------------
@@ -71,6 +73,30 @@ local function row(opts, key, choices)
         }
     end
     return buttons
+end
+
+-- Independent presence toggles. At least one stays enabled so the Library
+-- cannot be accidentally reduced to a blank screen with no way to recover.
+local function presence_row(opts)
+    local function enabled(key)
+        local value = opts.settings[key]
+        if value == nil then value = DEFAULTS[key] end
+        return value == true
+    end
+    local function button(key, other_key, label)
+        local checked = enabled(key)
+        return {
+            text = (checked and "✓ " or "") .. label,
+            callback = function()
+                if checked and not enabled(other_key) then return end
+                set(opts, key, not checked)
+            end,
+        }
+    end
+    return {
+        button("library_show_cloud", "library_show_local", _("Cloud books")),
+        button("library_show_local", "library_show_cloud", _("Local books")),
+    }
 end
 
 -- ---------------------------------------------------------------------------
@@ -115,6 +141,7 @@ function M.show(opts)
                 { label = _("Descending"), value = false },
                 { label = _("Ascending"),  value = true },
             }),
+            presence_row(opts),
 
             -- Actions
             { { text = _("Actions"), enabled = false } },

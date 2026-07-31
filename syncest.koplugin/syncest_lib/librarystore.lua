@@ -119,7 +119,19 @@ local GROUP_WHITELIST = {
 -- library when uploadedAt is set, and keeps locally-imported books that
 -- carry a downloadedAt — see useBooksSync.updateLibrary at
 -- apps/readest-app/src/app/library/hooks/useBooksSync.ts:136-139.
-local VISIBLE_BOOK_SQL = "cloud_present = 1"
+local VISIBLE_BOOK_SQL = "(cloud_present = 1 OR local_present = 1)"
+
+local function presence_sql(filters)
+    local show_cloud = not filters or filters.show_cloud ~= false
+    local show_local = not filters or filters.show_local ~= false
+    if show_cloud and show_local then return VISIBLE_BOOK_SQL end
+    -- Treat the two checkboxes as mutually understandable display buckets:
+    -- "Cloud books" means books that still need downloading, while a book
+    -- present both remotely and on-device belongs to the Local bucket.
+    if show_cloud then return "(cloud_present = 1 AND local_present = 0)" end
+    if show_local then return "local_present = 1" end
+    return "0 = 1"
+end
 
 local M = {}
 M.__index = M
@@ -362,7 +374,7 @@ function M:listBooks(filters)
     local where = {
         "user_id = ?",
         "deleted_at IS NULL",
-        VISIBLE_BOOK_SQL,
+        presence_sql(filters),
     }
     local args = { self.user_id }
 
@@ -451,10 +463,13 @@ end
 -- group's "most recent child" value (parity with Readest's
 -- getGroupSortValue at apps/readest-app/src/app/library/utils/libraryUtils.ts:381-387).
 -- Memoized per (user_id, group_by); invalidated by upsertBook.
-function M:getGroups(group_by)
+function M:getGroups(group_by, filters)
     if not GROUP_WHITELIST[group_by] then return {} end
 
-    local cached = self._groups_cache[group_by]
+    local cache_key = group_by
+        .. ":" .. tostring(not filters or filters.show_cloud ~= false)
+        .. ":" .. tostring(not filters or filters.show_local ~= false)
+    local cached = self._groups_cache[cache_key]
     if cached then return cached end
 
     local sql = string.format([[
@@ -469,7 +484,7 @@ function M:getGroups(group_by)
           AND %s IS NOT NULL AND %s != ''
         GROUP BY %s
         ORDER BY name ASC
-    ]], group_by, VISIBLE_BOOK_SQL, group_by, group_by, group_by)
+    ]], group_by, presence_sql(filters), group_by, group_by, group_by)
 
     local stmt = self.db:prepare(sql)
     stmt:reset():bind1(1, self.user_id)
@@ -487,7 +502,7 @@ function M:getGroups(group_by)
     end
     stmt:close()
 
-    self._groups_cache[group_by] = out
+    self._groups_cache[cache_key] = out
     return out
 end
 
@@ -507,13 +522,13 @@ end
 --
 -- Each returned entry is { _group=true, name, display_name, count,
 -- latest_updated_at }, sorted by display_name ASC.
-function M:listBookshelfGroups(group_by, parent_path)
+function M:listBookshelfGroups(group_by, parent_path, filters)
     if not GROUP_WHITELIST[group_by] then return {} end
 
     if group_by ~= "group_name" then
         if parent_path then return {} end
         local out = {}
-        for _i, g in ipairs(self:getGroups(group_by)) do
+        for _i, g in ipairs(self:getGroups(group_by, filters)) do
             out[#out + 1] = {
                 _group              = true,
                 name                = g.name,
@@ -544,7 +559,7 @@ function M:listBookshelfGroups(group_by, parent_path)
           AND %s
           AND group_name IS NOT NULL AND group_name != ''
         GROUP BY group_name
-    ]], VISIBLE_BOOK_SQL))
+    ]], presence_sql(filters)))
     stmt:reset():bind1(1, self.user_id)
 
     local prefix = parent_path and (parent_path .. "/") or nil

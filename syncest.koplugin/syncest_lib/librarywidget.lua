@@ -158,6 +158,8 @@ local function get_filters(settings, search)
         search       = search,
         sort_by      = settings.library_sort_by or "last_read_at",
         sort_asc     = settings.library_sort_ascending == true,
+        show_cloud   = settings.library_show_cloud ~= false,
+        show_local   = settings.library_show_local ~= false,
     }
 end
 
@@ -263,8 +265,9 @@ local function build_item_table(store, settings, search)
     end
 
     local parent_path = M._group_path
-    local groups = store:listBookshelfGroups(group_by, parent_path)
-    local books  = store:listBookshelfBooks(get_filters(settings, search), group_by, parent_path)
+    local filters = get_filters(settings, search)
+    local groups = store:listBookshelfGroups(group_by, parent_path, filters)
+    local books  = store:listBookshelfBooks(filters, group_by, parent_path)
 
     local sort_by = settings.library_sort_by or "last_read_at"
     local sort_asc = settings.library_sort_ascending == true
