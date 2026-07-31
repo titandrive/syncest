@@ -13,6 +13,9 @@ Syncest was made primarily to be used alongside [Obsidian MoonSync](https://gith
 - Sync KOReader reading statistics.
 - Sync vocabulary builder entries.
 - Maintain a Syncest book library with optional book and cover upload/download.
+- Browse the authoritative cloud catalog in grid or list view, with filters for
+  cloud-only books and cloud books already present on the current device.
+- Refresh or securely wipe the cloud catalog from the Library actions menu.
 - Push or pull all sync data except book files/catalog from one menu command.
 - Mirror progress pushes to KOReader KOSync when enabled.
 - Auto sync on common reading events:
@@ -141,11 +144,48 @@ The main Syncest menu also includes:
 
 Selecting a cloud-only book in the Syncest Library opens download options for choosing the destination folder, changing the filename, and viewing book information. After downloading, Syncest asks whether to read the book immediately.
 
-`Push books now` refreshes the cloud catalog, scans the complete local library, and reconciles all eligible catalog entries and book files instead of relying on the incremental sync cursor. `Pull books now` shows the current missing-book count and destination folder for confirmation, then refreshes the cloud catalog and downloads every cloud book that is not already present locally. Both operations verify books by hash, so an existing copy is updated or skipped instead of duplicated. Opening the Syncest Library refreshes its cloud catalog but does not automatically download every book.
+`Push books now` scans the complete local library, verifies the corresponding files and covers directly on WebDAV, uploads only missing objects, and then publishes the successfully backed catalog entries. It does not rely on stale local cloud flags or the incremental sync cursor. `Pull books now` shows the current missing-book count and destination folder for confirmation, then refreshes the cloud catalog and downloads every cloud book that is not already present locally. Both operations verify books by hash, so an existing copy is updated or skipped instead of duplicated. Opening the Syncest Library refreshes its cloud catalog but does not automatically download every book.
 
 If an archive folder is configured, pushing the Syncest book library skips books inside it.
 
+The Library view menu keeps cloud-location filters in their own section. `Cloud Books` shows catalog books that are not on the current device, while `Local Books` shows catalog books that are also present locally; enabling both shows the complete cloud catalog. `Refresh` performs an authoritative rebuild from `library.json` while preserving device-local file detection. `Wipe Cloud` requires confirmation, deletes `library.json` and the uploaded `books/` collection, and never deletes local device files.
+
 Manual stats pushes and pulls reconcile the complete statistics history. Automatic stats sync uses an incremental cursor for efficiency.
+
+## Changelog
+
+### 1.2.0
+
+#### Cloud catalog correctness
+
+- Make the Syncest Library display only books present in the cloud catalog; local files now classify cloud entries instead of appearing as independent cloud books.
+- Make Refresh an authoritative full catalog refresh, including correct handling of an empty or deleted `library.json`.
+- Preserve per-device `local_present`, file paths, and downloaded state while rebuilding cloud membership.
+- Correct Cloud Books and Local Books filter behavior in flat and grouped views.
+- Keep archived-only device rows out of the cloud presentation.
+
+#### Safer book operations
+
+- Verify actual WebDAV book files and covers during Push Books instead of trusting cached upload flags.
+- Upload missing book objects before publishing their catalog rows, preventing visible entries that cannot be downloaded.
+- Publish deletion tombstones before deleting remote book objects, preventing live catalog rows from pointing to removed files after a partial failure.
+- Keep a retained local copy uploadable after removing only its cloud copy.
+- Add a confirmed `Wipe Cloud` action that removes the catalog and uploaded book collection while preserving every local device file.
+
+#### Covers and interface
+
+- Restore reliable cloud and archived covers in both grid and list views, including local extracted-cover fallback when a remote cover is absent.
+- Version cached cover URIs so newly downloaded covers replace stale placeholders immediately.
+- Improve cloud indicators for Zen UI with transparent, solid-white outline icons in both views.
+- Separate Cloud Books and Local Books into a dedicated Book Location section.
+- Shorten Library action labels to Refresh, Set Directory, and Wipe Cloud.
+
+#### Reliability and maintenance
+
+- Keep Cloud Library opening pull-only so browsing never republishes local books.
+- Invalidate grouped-library caches when cloud membership is cleared.
+- Make local scans operate on device-local records rather than the cloud-filtered catalog.
+- Add regression coverage for remote book and cover inventory detection.
 
 ## KOSync Mirroring
 
