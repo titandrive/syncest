@@ -50,7 +50,6 @@ local function get_widget(kind, target_size)
     if not file then return nil end
     local ok, ImageWidget = pcall(require, "ui/widget/imagewidget")
     if not ok then return nil end
-    local Screen = require("device").screen
     local widget = ImageWidget:new{
         file = file,
         width = target_size,
@@ -58,10 +57,6 @@ local function get_widget(kind, target_size)
         scale_factor = 0,  -- aspect-preserving fit
         alpha = true,      -- preserve SVG transparency
         is_icon = true,
-        -- The whole UI buffer is inverted afterward in night mode. Invert
-        -- this white asset once here too, so the final on-screen icon remains
-        -- white in both day and night themes.
-        invert = Screen.night_mode,
     }
     _cache[kind] = { widget = widget, size_loaded = target_size }
     return widget
@@ -72,6 +67,25 @@ function M.paint_at(bb, icon_x, icon_y, target_size, kind)
     local icon = get_widget(kind, target_size)
     if not icon then return end
     icon:_render()
+    -- KOReader inverts the completed screen in night mode. Pre-invert only
+    -- this source blitbuffer so its white pixels finish white on-screen.
+    -- Doing this on the source preserves alpha; ImageWidget.invert would
+    -- instead invert the destination rectangle and create a visible box.
+    local Screen = require("device").screen
+    if Screen.night_mode and not icon._readest_night_prepared then
+        local source = icon._bb
+        if source then
+            -- ImageWidget's file cache owns this buffer. Copy before changing
+            -- it so no other widget sharing the cached SVG is affected.
+            local copy = source:copy()
+            if copy then
+                copy:invertRect(0, 0, copy:getWidth(), copy:getHeight())
+                icon._bb = copy
+                icon._bb_disposable = true
+            end
+        end
+        icon._readest_night_prepared = true
+    end
     icon:paintTo(bb, icon_x, icon_y)
 end
 
