@@ -655,6 +655,32 @@ local function runOpenSync(opts, store, menu)
         UIManager:scheduleIn(SYNC_DEFER_SECONDS, function()
             local ok, err = xpcall(function()
                 logger.info("ReadestLibrary scheduled cloud sync: enter")
+                -- Keep device-local presence independent from the cloud
+                -- rebuild. lightScan is cheap for normal opens. A one-time
+                -- directory scan repairs databases produced by the old full
+                -- refresh, which deleted all local rows before pulling.
+                local localscanner = require("syncest_lib.localscanner")
+                pcall(localscanner.lightScan, {
+                    store = store,
+                    ui = opts.ui,
+                })
+                if #store:listLocalBooks() == 0 then
+                    local DataStorage = require("datastorage")
+                    local LuaSettings = require("luasettings")
+                    local archive_settings = LuaSettings:open(
+                        DataStorage:getSettingsDir()
+                            .. "/move_to_archive_settings.lua")
+                    local archive_dir = archive_settings:readSetting("archive_dir")
+                        or archive_settings:readSetting("archive_dir_path")
+                    local home_dir = G_reader_settings:readSetting("home_dir")
+                        or "/sdcard/Books"
+                    pcall(localscanner.dirScan, {
+                        store = store,
+                        dir = home_dir,
+                        excluded_dirs = archive_dir and { archive_dir } or nil,
+                        compute_hashes = true,
+                    })
+                end
                 if NetworkMgr:willRerunWhenOnline(function()
                         logger.info("ReadestLibrary network rerun: cloud sync")
                         local rerun_ok, rerun_err = xpcall(function()
