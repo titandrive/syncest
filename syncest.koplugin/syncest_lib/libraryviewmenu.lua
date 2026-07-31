@@ -7,6 +7,7 @@
 -- Live-KOReader-only; smoke-tested via the manual matrix.
 
 local ButtonDialog = require("ui/widget/buttondialog")
+local ConfirmBox   = require("ui/widget/confirmbox")
 local PathChooser  = require("ui/widget/pathchooser")
 local UIManager    = require("ui/uimanager")
 local _            = require("syncest_i18n")
@@ -141,19 +142,21 @@ function M.show(opts)
                 { label = _("Descending"), value = false },
                 { label = _("Ascending"),  value = true },
             }),
+            -- Cloud catalog presence filters.
+            { { text = _("Book location"), enabled = false } },
             presence_row(opts),
 
             -- Actions
             { { text = _("Actions"), enabled = false } },
             {
                 {
-                    text = _("Refresh cloud library"),
+                    text = _("Refresh"),
                     callback = function()
                         require("syncest_lib.librarywidget").refreshCloud()
                     end,
                 },
                 {
-                    text = _("Download folder…"),
+                    text = _("Set Directory"),
                     callback = function()
                         local picker
                         picker = PathChooser:new{
@@ -168,6 +171,22 @@ function M.show(opts)
                             end,
                         }
                         UIManager:show(picker)
+                    end,
+                },
+            },
+            {
+                {
+                    text = _("Wipe Cloud"),
+                    callback = function()
+                        UIManager:show(ConfirmBox:new{
+                            text = _("Permanently delete every uploaded book and clear the cloud library catalog?")
+                                .. "\n\n"
+                                .. _("Books stored locally on your devices will not be deleted."),
+                            ok_text = _("Wipe Library"),
+                            ok_callback = function()
+                                require("syncest_lib.librarywidget").wipeCloudLibrary()
+                            end,
+                        })
                     end,
                 },
             },

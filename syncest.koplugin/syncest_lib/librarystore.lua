@@ -293,6 +293,7 @@ function M:clearCloudPresent()
     stmt:reset():bind(self.user_id)
     stmt:step()
     stmt:close()
+    self._groups_cache = {}
 end
 
 -- Reset cloud membership before a full authoritative rebuild. Device-local

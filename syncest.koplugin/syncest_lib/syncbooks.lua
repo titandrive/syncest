@@ -412,6 +412,33 @@ local function ensure_folder(api, url, user, pass)
     return code == 201 or code == 405, code == 201
 end
 
+-- Inspect the actual WebDAV objects for a bulk push. The catalog cache is not
+-- evidence that books/{hash}/{hash}.{ext} still exists (the server may have
+-- been wiped or a previous upload may have stopped halfway through).
+local function inventory_state(row, files)
+    local ext = row and EXTS[row.format]
+    local state = { book = false, cover = false }
+    for _, item in ipairs(type(files) == "table" and files or {}) do
+        if ext and item.text == row.hash .. "." .. ext then state.book = true end
+        if item.text == "cover.png" then state.cover = true end
+    end
+    return state
+end
+M._inventory_state = inventory_state
+
+local function remote_book_inventory(rows, opts)
+    local api, url, user, pass = webdav(opts)
+    local inventory = {}
+    for _, row in ipairs(rows or {}) do
+        local files = safe_webdav_call("list books/" .. tostring(row.hash), function()
+            return api:listFolder(url("books/" .. row.hash), user, pass, "", false)
+        end)
+        inventory[row.hash] = inventory_state(row, files)
+    end
+    return inventory
+end
+M._remote_book_inventory = remote_book_inventory
+
 -- DELETE a WebDAV URL (file or collection). Returns HTTP status.
 local function webdav_delete(full_url, user, pass)
     local socket     = require("socket")
@@ -524,164 +551,129 @@ function M.pushChangedBooks(opts, cb)
         return
     end
 
+    -- Verify remote bytes before trusting cached cloud flags. Upload/repair
+    -- objects first; only successfully backed rows may enter library.json.
+    local inventory = opts.full_push and remote_book_inventory(changed, opts) or {}
+    local DataStorage = require("datastorage")
+    local covers_dir = DataStorage:getSettingsDir() .. "/syncest_covers"
+    local uploaded, failed, covers_repaired, covers_failed = 0, 0, 0, 0
+    local publish_rows = {}
+    local total_uploads = 0
+    for _, row in ipairs(changed) do
+        local remote = inventory[row.hash]
+        local need_book = opts.full_push
+            and (not remote or not remote.book)
+            or (not opts.full_push
+                and (row.cloud_present ~= 1 or not row.uploaded_at))
+        if need_book then total_uploads = total_uploads + 1 end
+    end
+    local progress_done = 0
+    if opts.on_upload_progress and total_uploads > 0 then
+        opts.on_upload_progress({ uploaded = 0, failed = 0, done = 0,
+            total = total_uploads })
+    end
+
+    for _, original in ipairs(changed) do
+        local row = {}
+        for key, value in pairs(original) do row[key] = value end
+        local remote = inventory[row.hash]
+        local need_book = opts.full_push
+            and (not remote or not remote.book)
+            or (not opts.full_push
+                and (row.cloud_present ~= 1 or not row.uploaded_at))
+        local book_ready = not need_book
+        if need_book then
+            local call_ok, up_ok, err_up = pcall(M.uploadBook, row, {
+                client = client, settings = opts.settings, covers_dir = covers_dir,
+            }, nil)
+            book_ready = call_ok and up_ok == true
+            if book_ready then
+                uploaded = uploaded + 1
+                row.uploaded_at = now_ms()
+                row.updated_at = math.max(tonumber(row.updated_at) or 0,
+                    row.uploaded_at)
+            else
+                failed = failed + 1
+                logger.warn("Syncest uploadBook failed: " .. tostring(err_up))
+            end
+            progress_done = progress_done + 1
+            if opts.on_upload_progress then
+                opts.on_upload_progress({ uploaded = uploaded, failed = failed,
+                    done = progress_done, total = total_uploads,
+                    title = row.title, hash = row.hash })
+            end
+        elseif opts.full_push and remote and not remote.cover then
+            local call_ok, cover_ok = pcall(M.uploadBookCover, row, {
+                client = client, settings = opts.settings, covers_dir = covers_dir,
+            })
+            if call_ok and cover_ok then
+                covers_repaired = covers_repaired + 1
+            else
+                covers_failed = covers_failed + 1
+                logger.warn("Syncest uploadBookCover repair failed: "
+                    .. tostring(row.hash))
+            end
+        end
+        if book_ready and not row.uploaded_at then
+            row.uploaded_at = now_ms()
+            row.updated_at = math.max(tonumber(row.updated_at) or 0,
+                row.uploaded_at)
+        end
+        if book_ready then publish_rows[#publish_rows + 1] = row end
+    end
+
     local books_wire = {}
     local max_ts = since
-    for i, row in ipairs(changed) do
-        books_wire[i] = row_to_wire(row)
-        if row.updated_at and row.updated_at > max_ts then max_ts = row.updated_at end
-        if row.deleted_at and row.deleted_at > max_ts then max_ts = row.deleted_at end
+    for _, row in ipairs(publish_rows) do
+        books_wire[#books_wire + 1] = row_to_wire(row)
+        max_ts = math.max(max_ts, tonumber(row.updated_at) or 0,
+            tonumber(row.deleted_at) or 0)
     end
     for _, row in ipairs(archived_tombstones) do
         books_wire[#books_wire + 1] = row_to_wire(row)
-        if row.updated_at and row.updated_at > max_ts then max_ts = row.updated_at end
-        if row.deleted_at and row.deleted_at > max_ts then max_ts = row.deleted_at end
+        max_ts = math.max(max_ts, tonumber(row.updated_at) or 0,
+            tonumber(row.deleted_at) or 0)
     end
 
-    logger.info("WebDavSync pushChangedBooks: pushing " .. #books_wire .. " row(s)")
-    client:pushChanges(
-        {books = books_wire, notes = {}, configs = {}},
+    logger.info("Syncest pushChangedBooks: verified=" .. #publish_rows
+        .. " uploaded=" .. uploaded .. " failed=" .. failed
+        .. " covers_repaired=" .. covers_repaired
+        .. " covers_failed=" .. covers_failed)
+    if #books_wire == 0 then
+        if cb then cb(false, tostring(failed) .. " book file upload(s) failed") end
+        return
+    end
+
+    logger.info("WebDavSync pushChangedBooks: publishing " .. #books_wire .. " row(s)")
+    client:pushChanges({books = books_wire, notes = {}, configs = {}},
         function(success, _, status)
             if not success then
-                if cb then cb(false, "push failed (HTTP " .. tostring(status) .. ")") end
+                if cb then cb(false, "catalog push failed (HTTP "
+                    .. tostring(status) .. ")") end
                 return
             end
-
-            -- Upload actual book files to books/{hash}/{hash}.ext
-            local DataStorage = require("datastorage")
-            local covers_dir = DataStorage:getSettingsDir() .. "/syncest_covers"
-            local uploaded, failed = 0, 0
-            local covers_repaired, covers_failed = 0, 0
-            local uploaded_at = {}
-            local total_uploads = 0
-            for _, row in ipairs(changed) do
-                -- The full catalog is reconciled above, but book bytes only
-                -- need uploading when the pulled catalog lacks the row or
-                -- does not report a completed file upload.
-                if row.file_path and row.format
-                        and (row.cloud_present ~= 1 or not row.uploaded_at) then
-                    total_uploads = total_uploads + 1
-                end
-            end
-            local progress_done = 0
-            local progress_total = total_uploads
-            if opts.on_upload_progress and progress_total > 0 then
-                opts.on_upload_progress({
-                    uploaded = uploaded,
-                    failed = failed,
-                    done = 0,
-                    total = progress_total,
-                })
-            end
-            for _, row in ipairs(changed) do
-                if row.file_path and row.format
-                        and (row.cloud_present ~= 1 or not row.uploaded_at) then
-                    logger.info("WebDavSync pushChangedBooks: upload candidate hash="
-                        .. tostring(row.hash) .. " format=" .. tostring(row.format))
-                    local call_ok, up_ok, err_up = pcall(M.uploadBook, row, {
-                        client     = opts.client,
-                        settings   = opts.settings,
-                        covers_dir = covers_dir,
-                    }, nil)
-                    if call_ok and up_ok then
-                        uploaded = uploaded + 1
-                        uploaded_at[row.hash] = os.time() * 1000
-                    else
-                        failed = failed + 1
-                        logger.warn("Syncest uploadBook failed: " .. tostring(err_up))
-                    end
-                    progress_done = progress_done + 1
-                    if opts.on_upload_progress then
-                        opts.on_upload_progress({
-                            uploaded = uploaded,
-                            failed = failed,
-                            done = progress_done,
-                            total = progress_total,
-                            title = row.title,
-                            hash = row.hash,
-                        })
-                    end
-                elseif opts.full_push and row.file_path and row.format then
-                    -- The book bytes are already present, but older Syncest
-                    -- versions could complete that upload without a cover.
-                    -- A user-requested full push doubles as a cover repair;
-                    -- do not re-upload the much larger book file.
-                    local call_ok, cover_ok = pcall(M.uploadBookCover, row, {
-                        client     = opts.client,
-                        settings   = opts.settings,
-                        covers_dir = covers_dir,
-                    })
-                    if call_ok and cover_ok then
-                        covers_repaired = covers_repaired + 1
-                    else
-                        covers_failed = covers_failed + 1
-                        logger.warn("Syncest uploadBookCover repair failed: "
-                            .. tostring(row.hash))
-                    end
-                end
-            end
-            logger.info("Syncest pushChangedBooks: uploaded=" .. uploaded
-                .. " failed=" .. failed
-                .. " covers_repaired=" .. covers_repaired
-                .. " covers_failed=" .. covers_failed)
-
-            -- File uploads happen after the first metadata push. Publish
-            -- successful uploadedAt values before reporting completion.
-            local uploaded_wire = {}
-            for _, row in ipairs(changed) do
-                local is_cloud = row.cloud_present == 1
-                    or row.uploaded_at ~= nil
-                    or uploaded_at[row.hash] ~= nil
+            for _, row in ipairs(publish_rows) do
                 store:upsertBook({
-                    hash = row.hash,
-                    title = row.title,
-                    cloud_present = is_cloud and 1 or 0,
-                    uploaded_at = uploaded_at[row.hash],
+                    hash = row.hash, title = row.title,
+                    cloud_present = 1, uploaded_at = row.uploaded_at,
+                    updated_at = row.updated_at,
+                    _clear_fields = { "deleted_at" },
                 })
-                if uploaded_at[row.hash] then
-                    local uploaded_row = {}
-                    for key, value in pairs(row) do uploaded_row[key] = value end
-                    uploaded_row.uploaded_at = uploaded_at[row.hash]
-                    uploaded_row.updated_at = math.max(
-                        tonumber(uploaded_row.updated_at) or 0,
-                        uploaded_at[row.hash])
-                    uploaded_wire[#uploaded_wire + 1] = row_to_wire(uploaded_row)
-                end
             end
             for _, row in ipairs(archived_tombstones) do
                 store:upsertBook({
-                    hash                 = row.hash,
-                    title                = row.title,
-                    cloud_present        = 0,
-                    deleted_at           = row.deleted_at,
-                    updated_at           = row.updated_at,
+                    hash = row.hash, title = row.title,
+                    cloud_present = 0, deleted_at = row.deleted_at,
+                    updated_at = row.updated_at,
                     _force_cloud_present = true,
                 })
             end
-            local function finish()
-                if failed > 0 then
-                    if cb then
-                        cb(false, tostring(failed) .. " book file upload(s) failed")
-                    end
-                    return
-                end
-                store:setLastPulledAt(max_ts)
-                if cb then cb(true, #books_wire) end
-            end
-            if #uploaded_wire > 0 then
-                client:pushChanges(
-                    {books = uploaded_wire, notes = {}, configs = {}},
-                    function(upload_meta_ok, _, upload_meta_status)
-                        if not upload_meta_ok then
-                            if cb then
-                                cb(false, "uploaded book metadata push failed (HTTP "
-                                    .. tostring(upload_meta_status) .. ")")
-                            end
-                            return
-                        end
-                        finish()
-                    end)
-            else
-                finish()
+            store:setLastPulledAt(max_ts)
+            if failed > 0 then
+                if cb then cb(false, tostring(failed)
+                    .. " book file upload(s) failed") end
+            elseif cb then
+                cb(true, #books_wire)
             end
         end)
 end
@@ -1154,6 +1146,32 @@ function M.deleteCloudFiles(book, opts, cb)
     local ok = code == 200 or code == 204 or code == 404
     if cb then cb(ok, ok and 1 or 0, code) end
     return ok, code
+end
+
+-- Permanently remove the shared catalog and every uploaded book object. Delete
+-- the catalog first so a partial failure can leave only invisible orphan files,
+-- never visible rows that point at files already removed.
+function M.wipeCloudLibrary(opts, cb)
+    local logger = require("logger")
+    local _, url, user, pass = webdav(opts)
+    local catalog_code = webdav_delete(url("library.json"), user, pass)
+    local catalog_ok = catalog_code == 200 or catalog_code == 204
+        or catalog_code == 404
+    logger.info("WebDavSync wipeCloudLibrary: library.json → "
+        .. tostring(catalog_code))
+    if not catalog_ok then
+        if cb then cb(false, "catalog delete failed", catalog_code, false) end
+        return false, catalog_code
+    end
+
+    local books_code = webdav_delete(url("books/"), user, pass)
+    local books_ok = books_code == 200 or books_code == 204 or books_code == 404
+    logger.info("WebDavSync wipeCloudLibrary: books/ → " .. tostring(books_code))
+    if cb then
+        cb(books_ok, books_ok and nil or "book cleanup failed",
+            books_code, true)
+    end
+    return books_ok, books_code
 end
 
 return M

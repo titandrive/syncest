@@ -161,7 +161,9 @@ function M.lightScan(opts)
 
     -- Step 1: sweep stale file_paths to local_present=0
     local stale = 0
-    local rows = store:listBooks({})
+    -- Sweep device-local records directly. listBooks() is intentionally the
+    -- cloud catalog and therefore cannot see stale local-only rows.
+    local rows = store:listLocalBooks()
     for _, row in ipairs(rows) do
         if row.local_present == 1 and row.file_path then
             if lfs.attributes(row.file_path, "mode") ~= "file" then

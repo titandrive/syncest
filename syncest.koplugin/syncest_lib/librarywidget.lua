@@ -545,6 +545,43 @@ function M.refreshCloud()
     end)
 end
 
+function M.wipeCloudLibrary()
+    if not M._opts or not M._store then return end
+    local progress = InfoMessage:new{
+        text = _("Wiping cloud library…"),
+        timeout = 60,
+    }
+    UIManager:show(progress)
+    NetworkMgr:runWhenOnline(function()
+        Trapper:wrap(function()
+            syncbooks.wipeCloudLibrary({
+                settings = M._opts.settings,
+            }, function(success, _message, status, catalog_deleted)
+                UIManager:close(progress)
+                if success or catalog_deleted then
+                    -- The authoritative catalog is gone. Preserve device-local
+                    -- records, but make every row cloud-invisible immediately.
+                    M._store:resetCatalog()
+                    M.refresh()
+                end
+                if success then
+                    UIManager:show(InfoMessage:new{
+                        text = _("Cloud library wiped."), timeout = 3,
+                    })
+                else
+                    UIManager:show(InfoMessage:new{
+                        text = catalog_deleted
+                            and _("Library was cleared, but some cloud files could not be removed.")
+                            or _("Cloud library wipe failed.")
+                                .. " (status=" .. tostring(status) .. ")",
+                        timeout = 5,
+                    })
+                end
+            end)
+        end)
+    end)
+end
+
 -- ---------------------------------------------------------------------------
 -- close() — tear down the Library Menu if it's open.
 -- ---------------------------------------------------------------------------
@@ -656,31 +693,14 @@ local function runOpenSync(opts, store, menu)
             local ok, err = xpcall(function()
                 logger.info("ReadestLibrary scheduled cloud sync: enter")
                 -- Keep device-local presence independent from the cloud
-                -- rebuild. lightScan is cheap for normal opens. A one-time
-                -- directory scan repairs databases produced by the old full
-                -- refresh, which deleted all local rows before pulling.
+                -- rebuild. Directory discovery belongs to explicit bulk
+                -- push/pull; normal opens only validate known local files and
+                -- ReadHistory entries.
                 local localscanner = require("syncest_lib.localscanner")
                 pcall(localscanner.lightScan, {
                     store = store,
                     ui = opts.ui,
                 })
-                if #store:listLocalBooks() == 0 then
-                    local DataStorage = require("datastorage")
-                    local LuaSettings = require("luasettings")
-                    local archive_settings = LuaSettings:open(
-                        DataStorage:getSettingsDir()
-                            .. "/move_to_archive_settings.lua")
-                    local archive_dir = archive_settings:readSetting("archive_dir")
-                        or archive_settings:readSetting("archive_dir_path")
-                    local home_dir = G_reader_settings:readSetting("home_dir")
-                        or "/sdcard/Books"
-                    pcall(localscanner.dirScan, {
-                        store = store,
-                        dir = home_dir,
-                        excluded_dirs = archive_dir and { archive_dir } or nil,
-                        compute_hashes = true,
-                    })
-                end
                 if NetworkMgr:willRerunWhenOnline(function()
                         logger.info("ReadestLibrary network rerun: cloud sync")
                         local rerun_ok, rerun_err = xpcall(function()
@@ -1552,32 +1572,14 @@ function M.handleHold(item, opts)
         }}
     end
 
-    -- Cloud delete shared by "Cloud & Device" and "Cloud Only". Removing
-    -- WebDAV objects must always be followed by a catalog tombstone;
-    -- otherwise the next pull resurrects the row.
+    -- Hide the row in the authoritative catalog before deleting its bytes.
+    -- A failed cleanup then leaves only a harmless orphan; reversing this
+    -- order can leave a visible catalog entry whose book file is already gone.
     local function doCloudDelete(after_cb)
         local progress = InfoMessage:new{
             text = _("Removing from cloud…") .. " " .. (row.title or ""),
         }
         UIManager:show(progress)
-        syncbooks.deleteCloudFiles(row, {
-            settings  = opts.settings,
-        }, function(success, _msg, status)
-            UIManager:close(progress)
-            if not success then
-                UIManager:show(InfoMessage:new{
-                    text = _("Cloud removal failed.")
-                        .. " (status=" .. tostring(status) .. ")",
-                    timeout = 3,
-                })
-                if after_cb then after_cb(false) end
-                return
-            end
-            if after_cb then after_cb(true) end
-        end)
-    end
-
-    local function pushCloudTombstone(after_cb)
         local now = math.floor(os.time() * 1000)
         local tombstone = {}
         for k, v in pairs(row) do tombstone[k] = v end
@@ -1587,7 +1589,37 @@ function M.handleHold(item, opts)
             client = opts.client,
             settings = opts.settings,
         }, function(success)
-            if after_cb then after_cb(success == true, now) end
+            if not success then
+                UIManager:close(progress)
+                UIManager:show(InfoMessage:new{
+                    text = _("Cloud catalog removal failed."), timeout = 3,
+                })
+                if after_cb then after_cb(false) end
+                return
+            end
+            local local_copy_kept = on_local
+            M._store:upsertBook({
+                hash = row.hash, title = row.title,
+                cloud_present = 0,
+                deleted_at = local_copy_kept and nil or now,
+                updated_at = now,
+                _force_cloud_present = true,
+                _clear_fields = local_copy_kept and { "deleted_at" } or nil,
+            })
+            M.refresh()
+            syncbooks.deleteCloudFiles(row, {
+                settings = opts.settings,
+            }, function(cleaned, _msg, status)
+                UIManager:close(progress)
+                if not cleaned then
+                    UIManager:show(InfoMessage:new{
+                        text = _("Book was removed from the catalog, but cloud file cleanup failed.")
+                            .. " (status=" .. tostring(status) .. ")",
+                        timeout = 5,
+                    })
+                end
+                if after_cb then after_cb(true, now, cleaned) end
+            end)
         end)
     end
 
@@ -1600,27 +1632,16 @@ function M.handleHold(item, opts)
                     .. "\n\n" .. (row.title or ""),
                 ok_text = _("Remove"),
                 ok_callback = function()
-                    doCloudDelete(function()
+                    doCloudDelete(function(success, now)
+                        if not success then return end
                         removeLocalFile(row)
-                        pushCloudTombstone(function(success, now)
-                            if success then
-                                M._store:upsertBook({
-                                    hash                 = row.hash,
-                                    title                = row.title,
-                                    cloud_present        = 0,
-                                    local_present        = 0,
-                                    deleted_at           = now,
-                                    updated_at           = now,
-                                    _force_cloud_present = true,
-                                })
-                                M.refresh()
-                            else
-                                UIManager:show(InfoMessage:new{
-                                    text = _("Cloud catalog removal failed."),
-                                    timeout = 3,
-                                })
-                            end
-                        end)
+                        M._store:upsertBook({
+                            hash = row.hash, title = row.title,
+                            cloud_present = 0, local_present = 0,
+                            deleted_at = now, updated_at = now,
+                            _force_cloud_present = true,
+                        })
+                        M.refresh()
                     end)
                 end,
             })
@@ -1635,27 +1656,7 @@ function M.handleHold(item, opts)
                 ok_text = _("Remove"),
                 ok_callback = function()
                     doCloudDelete(function(success)
-                        if success then
-                            pushCloudTombstone(function(pushed, now)
-                                if pushed then
-                                    M._store:upsertBook({
-                                        hash                 = row.hash,
-                                        title                = row.title,
-                                        cloud_present        = 0,
-                                        local_present        = row.local_present,
-                                        deleted_at           = now,
-                                        updated_at           = now,
-                                        _force_cloud_present = true,
-                                    })
-                                    M.refresh()
-                                else
-                                    UIManager:show(InfoMessage:new{
-                                        text = _("Cloud catalog removal failed."),
-                                        timeout = 3,
-                                    })
-                                end
-                            end)
-                        end
+                        if success then M.refresh() end
                     end)
                 end,
             })
