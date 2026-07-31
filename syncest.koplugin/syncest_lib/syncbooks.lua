@@ -554,7 +554,7 @@ function M.pushChangedBooks(opts, cb)
                 end
             end
             local progress_done = 0
-            local progress_total = opts.full_push and #changed or total_uploads
+            local progress_total = total_uploads
             if opts.on_upload_progress and progress_total > 0 then
                 opts.on_upload_progress({
                     uploaded = uploaded,
@@ -590,32 +590,6 @@ function M.pushChangedBooks(opts, cb)
                             title = row.title,
                             hash = row.hash,
                         })
-                    end
-                end
-            end
-            -- A manual Push All is also the cover repair path. Refresh covers
-            -- for books whose bytes were already present so grayscale covers
-            -- previously uploaded by an e-ink device are replaced with RGB
-            -- versions extracted from the embedded source image.
-            if opts.full_push then
-                for _, row in ipairs(changed) do
-                    if not uploaded_at[row.hash] then
-                        pcall(M.uploadBookCover, row, {
-                            client     = opts.client,
-                            settings   = opts.settings,
-                            covers_dir = covers_dir,
-                        })
-                        progress_done = progress_done + 1
-                        if opts.on_upload_progress then
-                            opts.on_upload_progress({
-                                uploaded = uploaded,
-                                failed = failed,
-                                done = progress_done,
-                                total = progress_total,
-                                title = row.title,
-                                hash = row.hash,
-                            })
-                        end
                     end
                 end
             end
