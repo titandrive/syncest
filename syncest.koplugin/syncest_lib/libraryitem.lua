@@ -176,7 +176,23 @@ function M.entry_from_row(row, _opts)
         -- adds when mandatory is short. Keeps right-side text
         -- right-aligned with cloud rows that already use _no_provider.
         entry.mandatory = ext
-        bim_patch.register_local_path(row.file_path)
+        local local_cover = row.cover_path
+        if not local_cover and type(row.file_path) == "string"
+                and row.file_path:find("/archive/", 1, true) then
+            local DataStorage = require("datastorage")
+            local lfs = require("libs/libkoreader-lfs")
+            local settings_dir = DataStorage:getSettingsDir()
+            local extracted = settings_dir .. "/syncest_covers/"
+                .. row.hash .. ".png"
+            local downloaded = settings_dir .. "/readest_covers/"
+                .. row.hash .. ".png"
+            if lfs.attributes(extracted, "mode") == "file"
+                    and lfs.attributes(downloaded, "mode") ~= "file" then
+                local_cover = extracted
+            end
+        end
+        bim_patch.register_local_path(row.file_path, local_cover)
+        entry._syncest_local_cover = local_cover
         -- Mark "local but not in cloud" so the paintTo overlay paints
         -- the cloud-upload icon (mirroring Readest's BookItem rule:
         -- !uploadedAt → cloud-up).
@@ -189,13 +205,21 @@ function M.entry_from_row(row, _opts)
         -- Zen UI's folder-cover patch) don't disable cover rendering for it.
         -- The real book format is carried separately in `mandatory` and the
         -- backing row, so downloads still use the correct extension.
-        entry.file = cloud_covers.URI_PREFIX .. row.hash .. ".png"
+        entry.file = cloud_covers.cover_uri(row.hash)
         entry[M.CLOUD_ONLY_FLAG] = true
         -- Zen UI's synthetic URI has no sidecar and would otherwise be
         -- classified as "new", hiding the actual cloud-state distinction.
         entry._zen_effective_status = "reading"
         if row.archived_path then
             entry[M.ARCHIVED_FLAG] = true
+            local DataStorage = require("datastorage")
+            local lfs = require("libs/libkoreader-lfs")
+            local fallback = row.cover_path
+                or (DataStorage:getSettingsDir() .. "/syncest_covers/"
+                    .. row.hash .. ".png")
+            if lfs.attributes(fallback, "mode") == "file" then
+                entry._syncest_local_cover = fallback
+            end
         end
         -- Same _no_provider treatment as the local branch.
         entry.mandatory = ext

@@ -15,6 +15,11 @@ local PROGRESS_PUSH_TIMEOUT = 2
 local PROGRESS_PULL_TIMEOUT = 2
 local SYNC_TOTAL_TIMEOUT = socketutil.FILE_TOTAL_TIMEOUT or 60
 local SYNC_RETRIES = 2
+-- library.json can be materially slower through the Tailscale/WebDAV route
+-- used by e-ink devices. It is an explicit library operation, so allow the
+-- transfer to use the full request budget instead of the short background
+-- sync timeout (which otherwise aborts a healthy response after 3 seconds).
+local LIBRARY_TIMEOUT = 60
 
 local WebDavSyncClient = {}
 
@@ -946,14 +951,15 @@ function WebDavSyncClient:pushChanges(changes, callback)
 
     -- Library book rows — union merge with remote
     if changes.books and #changes.books > 0 then
-        local remote, read_status = self:_readJSON("library.json")
+        local remote, read_status = self:_readJSON("library.json", LIBRARY_TIMEOUT, 0)
         if remote == nil and read_status ~= READ_MISSING then
             ok = false
         else
             remote = remote or {books = {}}
             local merged = self:_mergeBooks(remote.books or {}, changes.books)
             if not self:_writeJSON("library.json",
-                    {books = merged, updatedAt = os.time() * 1000}) then
+                    {books = merged, updatedAt = os.time() * 1000},
+                    LIBRARY_TIMEOUT) then
                 ok = false
             end
         end
@@ -965,7 +971,7 @@ end
 function WebDavSyncClient:pullBooks(params, callback)
     logger.info("WebDavSyncClient pullBooks: since=" .. tostring(params and params.since))
     local since = tonumber(params.since) or 0
-    local data, read_status = self:_readJSON("library.json")
+    local data, read_status = self:_readJSON("library.json", LIBRARY_TIMEOUT, 0)
     if not data or not data.books then
         if read_status == READ_FAILED then
             callback(false, {books = {}}, "read_failed")

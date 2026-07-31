@@ -109,17 +109,10 @@ local GROUP_WHITELIST = {
     group_name   = true,
 }
 
--- A book is shown in the Library only when its file is actually reachable:
--- either uploaded to Readest cloud (uploaded_at set, so the file + its cover
--- can be downloaded) or present on this device (local_present = 1).
---
--- A bare cloud *record* with no uploaded file (cloud_present = 1 but
--- uploaded_at NULL) has no cover and cannot be opened, so showing it is
--- meaningless. This mirrors Readest, which only adds a synced book to the
--- library when uploadedAt is set, and keeps locally-imported books that
--- carry a downloadedAt — see useBooksSync.updateLibrary at
--- apps/readest-app/src/app/library/hooks/useBooksSync.ts:136-139.
-local VISIBLE_BOOK_SQL = "(cloud_present = 1 OR local_present = 1)"
+-- This screen is the cloud catalog, never a union with the device filesystem.
+-- local_present only divides cloud rows into downloaded/not-downloaded
+-- display buckets; it must never make a non-cloud row visible by itself.
+local VISIBLE_BOOK_SQL = "cloud_present = 1"
 
 local function presence_sql(filters)
     local show_cloud = not filters or filters.show_cloud ~= false
@@ -129,7 +122,7 @@ local function presence_sql(filters)
     -- "Cloud books" means books that still need downloading, while a book
     -- present both remotely and on-device belongs to the Local bucket.
     if show_cloud then return "(cloud_present = 1 AND local_present = 0)" end
-    if show_local then return "local_present = 1" end
+    if show_local then return "(cloud_present = 1 AND local_present = 1)" end
     return "0 = 1"
 end
 
@@ -300,6 +293,18 @@ function M:clearCloudPresent()
     stmt:reset():bind(self.user_id)
     stmt:step()
     stmt:close()
+end
+
+-- Discard the current user's cached catalog before a full authoritative
+-- rebuild. Callers must only invoke this after a successful remote fetch so
+-- a network failure cannot blank an otherwise usable library.
+function M:resetCatalog()
+    local stmt = self.db:prepare(
+        "DELETE FROM books WHERE user_id = ?")
+    stmt:reset():bind(self.user_id)
+    stmt:step()
+    stmt:close()
+    self._groups_cache = {}
 end
 
 -- ---------------------------------------------------------------------------
@@ -773,17 +778,21 @@ function M.parseSyncRow(dbRow)
 
     local out = {
         hash         = hash,
-        meta_hash    = dbRow.meta_hash,
+        meta_hash    = dbRow.meta_hash or dbRow.metaHash,
         title        = dbRow.title or "Untitled",
-        source_title = dbRow.source_title,
+        source_title = dbRow.source_title or dbRow.sourceTitle,
         author       = dbRow.author,
         format       = dbRow.format,
-        group_id     = dbRow.group_id,
-        group_name   = dbRow.group_name,
-        uploaded_at  = iso_to_ms(dbRow.uploaded_at),
-        updated_at   = iso_to_ms(dbRow.updated_at),
-        created_at   = iso_to_ms(dbRow.created_at),
-        deleted_at   = iso_to_ms(dbRow.deleted_at),
+        group_id     = dbRow.group_id or dbRow.groupId,
+        group_name   = dbRow.group_name or dbRow.groupName,
+        uploaded_at  = iso_to_ms(dbRow.uploaded_at)
+            or iso_to_ms(dbRow.uploadedAt),
+        updated_at   = iso_to_ms(dbRow.updated_at)
+            or iso_to_ms(dbRow.updatedAt),
+        created_at   = iso_to_ms(dbRow.created_at)
+            or iso_to_ms(dbRow.createdAt),
+        deleted_at   = iso_to_ms(dbRow.deleted_at)
+            or iso_to_ms(dbRow.deletedAt),
     }
 
     -- Metadata: parse JSON string OR accept an already-parsed table; extract

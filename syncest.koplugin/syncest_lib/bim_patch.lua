@@ -35,14 +35,25 @@ local _orig_get_book_info = nil  -- captured pre-patch; needed by list_strip
 -- cloud rows that already use _no_provider.
 local _library_local_paths = {}
 
+local function load_explicit_cover(path, width, height)
+    if type(path) ~= "string" then return nil end
+    local lfs = require("libs/libkoreader-lfs")
+    if lfs.attributes(path, "mode") ~= "file" then return nil end
+    local ok, RenderImage = pcall(require, "ui/renderimage")
+    if not ok then return nil end
+    local rendered, bb = pcall(
+        RenderImage.renderImageFile, RenderImage, path, false, width, height)
+    return rendered and bb or nil
+end
+
 -- Sentinel used by entry_from_row to flag cloud-only rows. Re-exported
 -- here so the patches can read it without a circular libraryitem import.
 M.CLOUD_ONLY_FLAG = "_readest_cloud_only"
 M.LOCAL_ONLY_FLAG = "_readest_local_only"
 M.ARCHIVED_FLAG   = "_readest_archived"
 
-function M.register_local_path(path)
-    _library_local_paths[path] = true
+function M.register_local_path(path, cover_path)
+    _library_local_paths[path] = cover_path or true
 end
 
 function M.orig_get_book_info()
@@ -140,7 +151,9 @@ local function patch_bim(opts)
         -- the right-side text right-aligns with cloud rows. Shallow
         -- copy first so we don't mutate BIM's cached entry.
         local result = _orig_get_book_info(self, filepath, do_cover_image)
-        if result and type(filepath) == "string" and _library_local_paths[filepath] then
+        local local_cover = type(filepath) == "string"
+            and _library_local_paths[filepath]
+        if result and local_cover then
             local copy = {}
             for k, v in pairs(result) do copy[k] = v end
             copy._no_provider = true
@@ -193,7 +206,26 @@ local function patch_list_menu_item()
         -- its cached-cover validation and replace it with a FakeCover. Keep
         -- that stock layout for metadata, then paint our validated persistent
         -- thumbnail directly into the reserved square cover slot.
-        if self.entry and self.entry[M.CLOUD_ONLY_FLAG]
+        if self.entry and self.entry._syncest_local_cover then
+            local slot = math.max(1, self.height - 2)
+            local cover_bb = load_explicit_cover(
+                self.entry._syncest_local_cover, slot, slot)
+            if cover_bb then
+                local ok_iw, ImageWidget = pcall(require, "ui/widget/imagewidget")
+                if ok_iw then
+                    local scale = math.min(
+                        slot / cover_bb:getWidth(),
+                        slot / cover_bb:getHeight())
+                    self._readest_cloud_cover = ImageWidget:new{
+                        image = cover_bb,
+                        scale_factor = scale,
+                    }
+                    self._readest_cloud_cover:_render()
+                else
+                    cover_bb:free()
+                end
+            end
+        elseif self.entry and self.entry[M.CLOUD_ONLY_FLAG]
                 and type(self.entry.file) == "string" then
             local hash = cloud_covers.hash_from_uri(self.entry.file)
             local cover_bb = hash and cloud_covers.load_cover_bb(hash, "list")
@@ -284,6 +316,10 @@ local function patch_mosaic_archive_banner()
     local orig_update = MosaicMenuItem.update
     if orig_update then
         function MosaicMenuItem:update(...)
+            if self._syncest_local_cover_widget then
+                self._syncest_local_cover_widget:free()
+                self._syncest_local_cover_widget = nil
+            end
             local result = orig_update(self, ...)
             if self.entry and self.entry._zen_effective_status then
                 self._zen_effective_status = self.entry._zen_effective_status
@@ -323,6 +359,37 @@ local function patch_mosaic_archive_banner()
         end
         local border = target.bordersize or 0
         local cover_left = x + math.floor((self.width - target.dimen.w) / 2)
+        if self.entry._syncest_local_cover then
+            if not self._syncest_local_cover_widget then
+                local inner_w = math.max(1, target.dimen.w - 2 * border)
+                local inner_h = math.max(1, target.dimen.h - 2 * border)
+                local cover_bb = load_explicit_cover(
+                    self.entry._syncest_local_cover, inner_w, inner_h)
+                if cover_bb then
+                    local ok_iw, ImageWidget = pcall(
+                        require, "ui/widget/imagewidget")
+                    if ok_iw then
+                        local scale = math.min(
+                            inner_w / cover_bb:getWidth(),
+                            inner_h / cover_bb:getHeight())
+                        self._syncest_local_cover_widget = ImageWidget:new{
+                            image = cover_bb,
+                            scale_factor = scale,
+                        }
+                        self._syncest_local_cover_widget:_render()
+                    else
+                        cover_bb:free()
+                    end
+                end
+            end
+            if self._syncest_local_cover_widget then
+                local size = self._syncest_local_cover_widget:getSize()
+                self._syncest_local_cover_widget:paintTo(
+                    bb,
+                    cover_left + math.floor((target.dimen.w - size.w) / 2),
+                    target.dimen.y + target.dimen.h - border - size.h)
+            end
+        end
         local icon_kind
         if self.entry[M.CLOUD_ONLY_FLAG] then
             icon_kind = "dl"

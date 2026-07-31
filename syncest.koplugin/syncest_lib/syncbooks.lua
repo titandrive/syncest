@@ -504,7 +504,15 @@ function M.pushChangedBooks(opts, cb)
                     and path_is_in_dir(row.file_path, library_dir)
                     and eligible_hashes
                     and eligible_hashes[row.hash] == true then
-                existing_files[#existing_files + 1] = row
+                -- Full push is an explicit assertion that every eligible
+                -- local file belongs in the cloud. A newer remote tombstone
+                -- must not beat this row during the library.json LWW merge,
+                -- otherwise delete -> Push books can never restore a book.
+                local resurrected = {}
+                for key, value in pairs(row) do resurrected[key] = value end
+                resurrected.deleted_at = nil
+                resurrected.updated_at = now_ms()
+                existing_files[#existing_files + 1] = resurrected
             end
         end
         changed = existing_files
@@ -542,6 +550,7 @@ function M.pushChangedBooks(opts, cb)
             local DataStorage = require("datastorage")
             local covers_dir = DataStorage:getSettingsDir() .. "/syncest_covers"
             local uploaded, failed = 0, 0
+            local covers_repaired, covers_failed = 0, 0
             local uploaded_at = {}
             local total_uploads = 0
             for _, row in ipairs(changed) do
@@ -591,9 +600,29 @@ function M.pushChangedBooks(opts, cb)
                             hash = row.hash,
                         })
                     end
+                elseif opts.full_push and row.file_path and row.format then
+                    -- The book bytes are already present, but older Syncest
+                    -- versions could complete that upload without a cover.
+                    -- A user-requested full push doubles as a cover repair;
+                    -- do not re-upload the much larger book file.
+                    local call_ok, cover_ok = pcall(M.uploadBookCover, row, {
+                        client     = opts.client,
+                        settings   = opts.settings,
+                        covers_dir = covers_dir,
+                    })
+                    if call_ok and cover_ok then
+                        covers_repaired = covers_repaired + 1
+                    else
+                        covers_failed = covers_failed + 1
+                        logger.warn("Syncest uploadBookCover repair failed: "
+                            .. tostring(row.hash))
+                    end
                 end
             end
-            logger.info("Syncest pushChangedBooks: uploaded=" .. uploaded .. " failed=" .. failed)
+            logger.info("Syncest pushChangedBooks: uploaded=" .. uploaded
+                .. " failed=" .. failed
+                .. " covers_repaired=" .. covers_repaired
+                .. " covers_failed=" .. covers_failed)
 
             -- File uploads happen after the first metadata push. Publish
             -- successful uploadedAt values before reporting completion.
@@ -715,12 +744,25 @@ function M.pullBooks(opts, cb)
         local rows    = body and body.books or {}
         local max_ts  = 0
         local upserted = 0
-        store:clearCloudPresent()
+        if opts.full_refresh and store.resetCatalog then
+            store:resetCatalog()
+        else
+            store:clearCloudPresent()
+        end
         for _, raw in ipairs(rows) do
             local parsed = LibraryStore.parseSyncRow(raw)
             if parsed then
                 local remote_deleted_at = parsed.deleted_at
                 local existing = store:_getRowRaw(parsed.hash)
+                -- A live cloud row can legitimately resurrect a previously
+                -- deleted hash. upsertBook preserves omitted fields by
+                -- default, so explicitly clear an older local tombstone;
+                -- otherwise the fresh row remains permanently hidden.
+                if not remote_deleted_at and existing and existing.deleted_at
+                        and (tonumber(parsed.updated_at) or 0)
+                            >= (tonumber(existing.deleted_at) or 0) then
+                    parsed._clear_fields = { "deleted_at" }
+                end
                 -- A cloud-only removal must not hide/delete a retained local
                 -- copy. Keep the tombstone's cloud absence while preserving
                 -- the local row as an uploadable device-only book.
@@ -979,6 +1021,15 @@ function M.uploadBookCover(book, opts)
     local cover_path = opts.covers_dir .. "/" .. book.hash .. ".source.png"
     if lfs.attributes(cover_path, "mode") ~= "file"
             and not M.extractLocalCover(book.file_path, cover_path) then
+        return false
+    end
+    -- A metadata row may survive an interrupted/legacy upload even when its
+    -- books/{hash}/ collection does not. Cover-only repair must recreate the
+    -- remote parent just like uploadBook does, otherwise WebDAV rejects the
+    -- PUT with 409 Conflict.
+    local book_dir = string.format("books/%s", book.hash)
+    if not ensure_folder(api, url("books"), user, pass)
+            or not ensure_folder(api, url(book_dir), user, pass) then
         return false
     end
     local cover_rel = string.format("books/%s/cover.png", book.hash)

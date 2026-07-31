@@ -72,6 +72,19 @@ function M.cover_token(hash)
     return source_token(cover_path_for(hash))
 end
 
+-- Keep the real book hash at the start of the synthetic filename, but add a
+-- source version before the final image suffix. Zen UI keys its rendered-tile
+-- cache by entry.file; without a changing URI, a FakeCover created before the
+-- async download survives ordinary Library refreshes indefinitely.
+function M.cover_uri(hash)
+    local token = M.cover_token(hash)
+    if token then
+        token = token:gsub("[^%w]", "_")
+        return M.URI_PREFIX .. hash .. "." .. token .. ".png"
+    end
+    return M.URI_PREFIX .. hash .. ".pending.png"
+end
+
 -- Drop downloaded cloud covers and every derived thumbnail so the next
 -- Library paint fetches the current WebDAV cover instead of treating an old
 -- on-device PNG as authoritative.
@@ -97,6 +110,16 @@ function M.clear_download_cache()
             end
         end
     end
+end
+
+-- A catalog refresh should retry covers previously marked missing, but it
+-- must not delete good on-device covers first. If the server is temporarily
+-- unreachable, deleting the cache turns already-renderable books into blank
+-- tiles (and forces every cover through the network again).
+function M.reset_download_failures()
+    _missing_covers = {}
+    _cover_pending = {}
+    _download_queue = {}
 end
 
 local function read_text(path)
@@ -249,6 +272,31 @@ local function process_queue()
                     _missing_covers[hash] = true
                     logger.info("WebDavSync cover " .. tag_for(hash)
                         .. " — not on server (404)")
+                    -- A local/archived copy may still have a valid extracted
+                    -- cover. Persist that path so its row can bypass a stale
+                    -- KOReader FakeCover without affecting unrelated books.
+                    local DataStorage = require("datastorage")
+                    local fallback = DataStorage:getSettingsDir()
+                        .. "/syncest_covers/" .. hash .. ".png"
+                    local lfs = require("libs/libkoreader-lfs")
+                    if lfs.attributes(fallback, "mode") == "file" then
+                        local LibraryWidget = package.loaded["syncest_lib.librarywidget"]
+                        local store = LibraryWidget and LibraryWidget._store
+                        local meta = _meta[hash] or {}
+                        if store then
+                            store:upsertBook({
+                                hash = hash,
+                                title = meta.title or "Untitled",
+                                cover_path = fallback,
+                            })
+                        end
+                        if LibraryWidget and LibraryWidget._menu then
+                            local UIManager = require("ui/uimanager")
+                            UIManager:nextTick(function()
+                                LibraryWidget.refresh()
+                            end)
+                        end
+                    end
                 else
                     logger.warn("WebDavSync cover " .. tag_for(hash)
                         .. " failed: " .. tostring(path_or_err))

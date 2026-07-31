@@ -91,6 +91,15 @@ local function decorate_archive_row(row)
     return copy
 end
 
+-- The Syncest Library is a cloud catalog, optionally decorated with normal
+-- on-device copies. Files in KOReader's archive are explicitly tombstoned by
+-- Push Books, so never let their local SQLite rows briefly masquerade as
+-- cloud-library entries while that push (or the next authoritative refresh)
+-- is still in flight.
+local function is_archive_only_row(row)
+    return row and M._archive_paths[row.hash] ~= nil
+end
+
 -- ---------------------------------------------------------------------------
 -- check_renderer_compat: signature + smoke test from the eng review.
 -- Returns ok, reason; on failure, librarywidget falls back to a plain Menu
@@ -258,9 +267,11 @@ local function build_item_table(store, settings, search)
     if not group_by then
         local rows = store:listBooks(get_filters(settings, search))
         local items = {}
-        for i, row in ipairs(rows) do
-            row = decorate_archive_row(row)
-            items[i] = libraryitem.entry_from_row(row)
+        for _, row in ipairs(rows) do
+            if not is_archive_only_row(row) then
+                row = decorate_archive_row(row)
+                items[#items + 1] = libraryitem.entry_from_row(row)
+            end
         end
         return add_search_back(items)
     end
@@ -299,11 +310,13 @@ local function build_item_table(store, settings, search)
         }
     end
     for _i, row in ipairs(books) do
-        row = decorate_archive_row(row)
-        merged[#merged + 1] = {
-            entry = libraryitem.entry_from_row(row),
-            sort_value = b_value(row),
-        }
+        if not is_archive_only_row(row) then
+            row = decorate_archive_row(row)
+            merged[#merged + 1] = {
+                entry = libraryitem.entry_from_row(row),
+                sort_value = b_value(row),
+            }
+        end
     end
     table.sort(merged, function(a, b)
         local av, bv = a.sort_value, b.sort_value
@@ -504,14 +517,21 @@ function M.refreshCloud()
     UIManager:show(progress)
     NetworkMgr:runWhenOnline(function()
         Trapper:wrap(function()
-            cloud_covers.clear_download_cache()
+            cloud_covers.reset_download_failures()
             syncbooks.pullBooks({
                 client = M._opts.client,
                 settings = M._opts.settings,
                 store = M._store,
+                full_refresh = true,
             }, function(success)
                 UIManager:close(progress)
                 if success then
+                    -- This action is an authoritative *cloud* refresh. Do
+                    -- not immediately repopulate the freshly reset catalog
+                    -- from local/archive folders; an empty library.json must
+                    -- produce an empty cloud-library screen. Normal library
+                    -- opening and explicit local scans remain responsible
+                    -- for discovering device files.
                     M.refresh()
                     if M._menu then UIManager:setDirty(M._menu, "ui") end
                 else
@@ -561,18 +581,16 @@ end
 -- progress dialog; subprocess for the heavy walk happens inside
 -- localscanner.fullSidecarWalk on first run / 24h interval).
 --
--- Sync direction depends on settings.auto_sync (mirrors the auto-sync
--- toggle the user controls from the Readest plugin menu):
---   on  → "both" (push local changes first, then pull remote changes)
---   off → "pull" only (still surface cloud-side updates so the Library
---         view stays meaningful, but never silently push local state).
+-- Opening the cloud library is always read-only. Uploading books is an
+-- explicit user action; auto-sync applies to reading data, not publication
+-- of the local book catalog.
 -- ---------------------------------------------------------------------------
 local function runCloudSync(opts, store)
     if not opts.client then
         logger.info("ReadestLibrary runCloudSync: no client configured, skipping")
         return
     end
-    local mode = opts.settings.auto_sync and "both" or "pull"
+    local mode = "pull"
     local DocSettings = require("docsettings")
     local ok_bl, BookList = pcall(require, "ui/widget/booklist")
     local statussync = require("syncest_lib.statussync")
@@ -607,22 +625,13 @@ local function runCloudSync(opts, store)
         M.refresh()
     end
 
-    if mode == "both" then
-        -- before_push runs after pull, before push: apply pulled statuses to
-        -- sidecars and capture sidecar changes into the store so they're pushed.
-        syncbooks.syncBooks({
-            client = opts.client,
-            settings = opts.settings, store = store,
-        }, "both", done, reconcile)
-    else
-        syncbooks.syncBooks({
-            client = opts.client,
-            settings = opts.settings, store = store,
-        }, "pull", function(success, msg, status)
-            reconcile()  -- apply cloud statuses to sidecars even when auto_sync is off
-            done(success, msg, status)
-        end)
-    end
+    syncbooks.syncBooks({
+        client = opts.client,
+        settings = opts.settings, store = store,
+    }, "pull", function(success, msg, status)
+        reconcile()
+        done(success, msg, status)
+    end)
 end
 
 -- Cloud sync HTTP is synchronous on platforms without the Turbo looper
