@@ -191,11 +191,11 @@ function M.entry_from_row(row, _opts)
         -- backing row, so downloads still use the correct extension.
         entry.file = cloud_covers.URI_PREFIX .. row.hash .. ".png"
         entry[M.CLOUD_ONLY_FLAG] = true
+        -- Zen UI's synthetic URI has no sidecar and would otherwise be
+        -- classified as "new", hiding the actual cloud-state distinction.
+        entry._zen_effective_status = "reading"
         if row.archived_path then
             entry[M.ARCHIVED_FLAG] = true
-            -- Zen UI consults this before deriving "new" from the synthetic
-            -- cloud URI. The Syncest overlay paints the accurate label.
-            entry._zen_effective_status = "reading"
         end
         -- Same _no_provider treatment as the local branch.
         entry.mandatory = ext

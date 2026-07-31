@@ -259,13 +259,18 @@ local function patch_mosaic_archive_banner()
     if not ok_menu or type(MosaicMenu._updateItemsBuildUI) ~= "function" then
         return
     end
-    local MosaicMenuItem
-    for i = 1, 50 do
-        local name, val = debug.getupvalue(MosaicMenu._updateItemsBuildUI, i)
-        if not name then break end
-        if name == "MosaicMenuItem" and type(val) == "table" then
-            MosaicMenuItem = val
-            break
+    -- Zen UI replaces stock book tiles with its own class. Prefer that
+    -- explicitly exported class; the builder's MosaicMenuItem upvalue is
+    -- retained only for folder tiles and never paints Syncest book entries.
+    local MosaicMenuItem = MosaicMenu._zen_mosaic_item_class
+    if not MosaicMenuItem then
+        for i = 1, 50 do
+            local name, val = debug.getupvalue(MosaicMenu._updateItemsBuildUI, i)
+            if not name then break end
+            if name == "MosaicMenuItem" and type(val) == "table" then
+                MosaicMenuItem = val
+                break
+            end
         end
     end
     if not MosaicMenuItem or type(MosaicMenuItem.paintTo) ~= "function" then
@@ -276,6 +281,16 @@ local function patch_mosaic_archive_banner()
     local Blitbuffer = require("ffi/blitbuffer")
     local CornerBanner = require("syncest_lib.corner_banner")
     local _ = require("gettext")
+    local orig_update = MosaicMenuItem.update
+    if orig_update then
+        function MosaicMenuItem:update(...)
+            local result = orig_update(self, ...)
+            if self.entry and self.entry._zen_effective_status then
+                self._zen_effective_status = self.entry._zen_effective_status
+            end
+            return result
+        end
+    end
     local orig_paint = MosaicMenuItem.paintTo
     function MosaicMenuItem:paintTo(bb, x, y)
         -- Zen UI reserves a title strip below the cover but the stock
@@ -300,7 +315,7 @@ local function patch_mosaic_archive_banner()
         orig_paint(self, bb, x, y)
         if center_paint then cover_container.paintTo = center_paint end
         if not self.entry then return end
-        local target = self._cover_frame
+        local target = self._zen_cover_frame or self._cover_frame
             or (self[1] and self[1][1] and self[1][1][1])
         if not (target and target.dimen and target.dimen.w
                 and target.dimen.h and target.dimen.y) then
