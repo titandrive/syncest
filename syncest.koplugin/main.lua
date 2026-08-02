@@ -520,6 +520,14 @@ function Syncest:_notifyProgressPushResult(notify, success, unchanged)
             text = text,
             timeout = 2,
         })
+    elseif notify == "manual" then
+        UIManager:show(Notification:new{
+            text = success
+                and (unchanged and _("Progress already synced")
+                    or _("Progress pushed"))
+                or _("Progress push failed"),
+            timeout = 2,
+        })
     elseif success then
         self:_autoNotify("progress", "pushed")
     else
@@ -1131,6 +1139,9 @@ function Syncest:pushBookConfigAsync(notify, history_source, history_reason)
     })
     add_progress_history(
         payload, self.settings, history_source, history_reason, self.ui)
+    if notify == true and history_source == "manual" then
+        notify = "manual"
+    end
     local already_pushed = self:_progressPayloadAlreadyPushed(payload)
     if NetworkMgr:willRerunWhenOnline(
             function()

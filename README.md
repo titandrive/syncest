@@ -154,6 +154,13 @@ Manual stats pushes and pulls reconcile the complete statistics history. Automat
 
 ## Changelog
 
+### 1.2.4
+
+- Speed up manual reading-progress pushes by reducing normal progress-history bookkeeping to one read and one write.
+- Repair missing WebDAV history folders only after a direct write fails instead of probing every folder before every checkpoint.
+- Persist remote device-registration confirmation so established history files skip redundant registry requests while automatically re-registering after a cloud wipe.
+- Make the manual success notification immediate after both current progress and its history checkpoint are durable; report failure if the requested checkpoint could not be saved.
+
 ### 1.2.3
 
 - Render cached cloud-book and grouped-library covers through real PNG paths so Zen UI no longer replaces valid covers with generated placeholders.

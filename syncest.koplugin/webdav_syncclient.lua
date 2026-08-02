@@ -721,16 +721,11 @@ function WebDavSyncClient:_appendProgressHistory(book_hash, history)
     local device_id = tostring(history.deviceId):gsub("[^%w_.%-]", "_")
     if device_id == "" then return false end
     local base = "sync/" .. tostring(book_hash) .. "/progress-history"
-    if not (self:_ensureFolder("sync")
-            and self:_ensureFolder("sync/" .. tostring(book_hash))
-            and self:_ensureFolder(base)) then
-        return false
-    end
-
     local device_path = progress_history_path(book_hash, device_id .. ".json")
     local remote, read_status = self:_readJSON(device_path)
     if remote == nil and read_status ~= READ_MISSING then return false end
     remote = remote or {}
+    local registry_confirmed = remote.registryConfirmed == true
     local entries = type(remote.entries) == "table" and remote.entries or {}
     local entry_id = tostring(history.entry.id or "")
     local found = false
@@ -759,20 +754,34 @@ function WebDavSyncClient:_appendProgressHistory(book_hash, history)
         end
     end
     entries = retained
-    if not self:_writeJSON(device_path, {
+    local device_body = {
         version = 1,
         deviceId = device_id,
         deviceName = history.deviceName,
         entries = entries,
-    }) then
-        return false
+        registryConfirmed = registry_confirmed,
+    }
+    if not self:_writeJSON(device_path, device_body) then
+        -- Normal pushes avoid three redundant folder probes. Repair the
+        -- hierarchy only when a first write proves it is missing (fresh
+        -- setup, cloud wipe, or manual server-side deletion).
+        if not (self:_ensureFolder("sync")
+                and self:_ensureFolder("sync/" .. tostring(book_hash))
+                and self:_ensureFolder(base)
+                and self:_writeJSON(device_path, device_body)) then
+            return false
+        end
     end
+
+    -- A confirmed per-device file can skip devices.json entirely. The marker
+    -- lives remotely, so a cloud wipe naturally returns to registration.
+    if registry_confirmed then return true end
 
     -- The small registry lets clients discover device-owned files without
     -- depending on WebDAV directory-listing behavior, which varies by server.
     local registry_path = progress_history_path(book_hash, "devices.json")
     local registry, registry_status = self:_readJSON(registry_path)
-    if registry == nil and registry_status ~= READ_MISSING then return true end
+    if registry == nil and registry_status ~= READ_MISSING then return false end
     registry = registry or {}
     local device_ids = type(registry.deviceIds) == "table"
         and registry.deviceIds or {}
@@ -780,10 +789,19 @@ function WebDavSyncClient:_appendProgressHistory(book_hash, history)
     for _, existing_id in ipairs(device_ids) do
         if tostring(existing_id) == device_id then registered = true break end
     end
-    if registered then return true end
-    device_ids[#device_ids + 1] = device_id
-    table.sort(device_ids)
-    self:_writeJSON(registry_path, {version = 1, deviceIds = device_ids})
+    if not registered then
+        device_ids[#device_ids + 1] = device_id
+        table.sort(device_ids)
+        if not self:_writeJSON(
+                registry_path, {version = 1, deviceIds = device_ids}) then
+            return false
+        end
+    end
+    -- This marker makes every later checkpoint a two-request read/write.
+    -- Failure to persist the optimization marker is harmless: the history
+    -- and registry are already durable, and a later push will retry it.
+    device_body.registryConfirmed = true
+    self:_writeJSON(device_path, device_body)
     return true
 end
 
@@ -873,10 +891,12 @@ function WebDavSyncClient:pushChanges(changes, callback)
                 local history_ok = self:_appendProgressHistory(
                     book_hash, changes.progressHistory)
                 if not history_ok then
-                    -- History is a recovery aid. Never turn a successful
-                    -- latest-position sync into a failure if its companion
-                    -- history write is unavailable.
                     logger.warn("WebDavSyncClient pushChanges: progress history write failed")
+                    -- A manual checkpoint is explicitly requested recovery
+                    -- data. Do not report the manual push as complete until
+                    -- both latest progress and that checkpoint are durable.
+                    local entry = changes.progressHistory.entry
+                    if entry and entry.source == "manual" then ok = false end
                 end
             end
         end
