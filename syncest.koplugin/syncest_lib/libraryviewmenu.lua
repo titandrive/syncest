@@ -47,7 +47,7 @@ end
 -- to know these so the implicit default still shows as selected.
 local DEFAULTS = {
     library_view_mode      = "mosaic",
-    library_group_by       = "groups",
+    library_group_by       = "none",
     library_sort_by        = "last_read_at",
     library_sort_ascending = false,
     library_show_cloud     = true,
@@ -116,17 +116,12 @@ function M.show(opts)
                 { label = _("List"), value = "list" },
             }),
 
-            -- Group by — alphabetical order matching Readest's web UI.
-            -- Values mirror Readest's LibraryGroupByType ("authors",
-            -- "groups", "series"); active_group_by() in librarywidget
-            -- maps these to the SQL column names ("author",
-            -- "group_name", "series") at the store boundary.
-            -- "Books" is the no-grouping mode (flat list).
+            -- "None" is a flat list; the other values map to LibraryStore
+            -- columns at the query boundary.
             { { text = _("Group by"), enabled = false } },
             row(opts, "library_group_by", {
+                { label = _("None"),    value = "none" },
                 { label = _("Authors"), value = "authors" },
-                { label = _("Books"),   value = "none" },
-                { label = _("Groups"),  value = "groups" },
                 { label = _("Series"),  value = "series" },
             }),
 

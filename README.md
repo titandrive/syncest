@@ -154,6 +154,15 @@ Manual stats pushes and pulls reconcile the complete statistics history. Automat
 
 ## Changelog
 
+### 1.2.3
+
+- Render cached cloud-book and grouped-library covers through real PNG paths so Zen UI no longer replaces valid covers with generated placeholders.
+- Reuse cloud cover art when a local book has no usable extracted cover, and fetch missing covers for every visible cloud-backed row.
+- Materialize group mosaics before rendering while preserving the correct book and group titles instead of cache hashes.
+- Normalize local and cloud thumbnails to the same square size in list view without changing grid covers.
+- Increase WebDAV transfer timeouts for books and covers on high-latency mobile connections, and show progress while verifying which books actually need uploading.
+- Simplify grouping to `None`, `Authors`, and `Series`; make the flat, ungrouped library the default and remove the unused legacy `Groups` option.
+
 ### 1.2.2
 
 - Fix Cloud Library refresh on Android mobile data by bypassing KOReader's Wi-Fi-only online gate.

@@ -173,21 +173,19 @@ local function get_filters(settings, search)
     }
 end
 
--- The picker values mirror Readest's LibraryGroupByType ("authors",
--- "groups", "series"); the store schema uses singular SQL column names
--- ("author", "group_name", "series"). This map translates one to the
--- other so the UI value and the SQL identifier can both be canonical.
--- Default first-run group-by is "groups" for parity with Readest web.
-local DEFAULT_GROUP_BY = "groups"
+-- Translate grouping picker values to LibraryStore column names.
+-- Flat, ungrouped books are the default.
+local DEFAULT_GROUP_BY = "none"
 local GROUP_BY_TO_COLUMN = {
     authors = "author",
-    groups  = "group_name",
     series  = "series",
 }
 local function active_group_by(settings)
     local g = settings.library_group_by
     if g == nil then g = DEFAULT_GROUP_BY end
-    if g == "none" then return nil end
+    -- "groups" existed before Syncest exposed an explicit ungrouped mode,
+    -- but the plugin has no way to assign that legacy catalog field.
+    if g == "none" or g == "groups" then return nil end
     return GROUP_BY_TO_COLUMN[g] or g
 end
 
