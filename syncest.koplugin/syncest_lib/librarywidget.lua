@@ -301,6 +301,8 @@ local function build_item_table(store, settings, search)
         group_by   = group_by,
         with_cover = true,
         shape      = (view_mode == "list") and "list" or "grid",
+        store      = store,
+        settings   = settings,
     }
     local merged = {}
     for _i, g in ipairs(groups) do

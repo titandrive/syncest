@@ -50,6 +50,14 @@ local function cover_path_for(hash)
     return M.covers_dir() .. "/" .. hash .. ".png"
 end
 
+function M.cached_cover_path(hash)
+    local lfs = require("libs/libkoreader-lfs")
+    local path = cover_path_for(hash)
+    if lfs.attributes(path, "mode") == "file" then
+        return path
+    end
+end
+
 local function thumbnail_dir()
     local DataStorage = require("datastorage")
     return DataStorage:getSettingsDir() .. "/syncest_thumbnails"

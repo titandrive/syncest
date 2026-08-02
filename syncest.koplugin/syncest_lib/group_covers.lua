@@ -102,6 +102,12 @@ local function cache_dir()
     return DataStorage:getSettingsDir() .. "/syncest_group_thumbnails"
 end
 
+local function group_identity(group_by, value, shape)
+    return sha2.md5(table.concat({
+        tostring(group_by), tostring(value), tostring(shape or "grid"),
+    }, "|"))
+end
+
 local function read_text(path)
     local f = io.open(path, "r")
     if not f then return nil end
@@ -210,9 +216,7 @@ function M.serve_or_compose(group_by, value, shape,
         sort_by  = settings and settings.library_sort_by,
         sort_asc = settings and settings.library_sort_ascending == true,
     })
-    local identity = sha2.md5(table.concat({
-        tostring(group_by), tostring(value), tostring(shape or "grid"),
-    }, "|"))
+    local identity = group_identity(group_by, value, shape)
     local fingerprint = books_fingerprint(books, shape)
     local memory = _mosaic_cache[identity]
     if memory and memory.fingerprint == fingerprint and memory.bb then
@@ -257,6 +261,21 @@ function M.serve_or_compose(group_by, value, shape,
         _mosaic_cache[identity] = nil
     end
     return bb, books
+end
+
+-- Build/validate a group composite before constructing its menu entry, then
+-- return the real PNG path that stock KOReader and Zen both accept.
+function M.materialize_path(group_by, value, shape, store, settings)
+    if not store then return nil end
+    local ok_bim, BIM = pcall(require, "bookinfomanager")
+    if not ok_bim or not BIM then return nil end
+    local bb = M.serve_or_compose(
+        group_by, value, shape, store, settings, BIM.getBookInfo, BIM)
+    if bb then bb:free() end
+    local path = cache_dir() .. "/"
+        .. group_identity(group_by, value, shape) .. ".png"
+    local lfs = require("libs/libkoreader-lfs")
+    if lfs.attributes(path, "mode") == "file" then return path end
 end
 
 return M

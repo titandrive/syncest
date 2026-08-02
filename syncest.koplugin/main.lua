@@ -3823,6 +3823,9 @@ function Syncest:_backgroundSyncBooksLibrary(
                 settings = settings,
                 store = store,
                 full_push = mode == "push" and interactive,
+                on_inventory_progress = function(progress)
+                    write_background_json_result(progress_file, progress)
+                end,
                 on_upload_progress = function(progress)
                     write_background_json_result(progress_file, progress)
                 end,
@@ -3924,7 +3927,9 @@ function Syncest:_backgroundSyncBooksLibrary(
             local key = tostring(done) .. "/" .. tostring(total) .. "/" .. tostring(failed)
             if key == last_progress_key then return end
             last_progress_key = key
-            local verb = progress.phase == "download" and "downloading" or "uploading"
+            local verb = progress.phase == "download" and "downloading"
+                or progress.phase == "verify" and "verifying"
+                or "uploading"
             local text = failed > 0
                 and string.format("Books %s %d/%d (%d failed)", verb, done, total, failed)
                 or string.format("Books %s %d/%d", verb, done, total)

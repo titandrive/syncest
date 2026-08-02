@@ -35,6 +35,7 @@ local _orig_get_book_info = nil  -- captured pre-patch; needed by list_strip
 -- (the format string), keeping right-side text right-aligned with
 -- cloud rows that already use _no_provider.
 local _library_local_paths = {}
+local _library_render_meta = {}
 
 -- Cloud and group cover URIs exist only to feed the cover-browser renderer.
 -- Some UI patches treat any entry.file value as a readable document and call
@@ -99,6 +100,12 @@ M.ARCHIVED_FLAG   = "_readest_archived"
 
 function M.register_local_path(path, cover_path)
     _library_local_paths[path] = cover_path or true
+end
+
+function M.register_render_path(path, title, author)
+    if type(path) == "string" then
+        _library_render_meta[path] = { title = title, author = author }
+    end
 end
 
 function M.orig_get_book_info()
@@ -198,10 +205,18 @@ local function patch_bim(opts)
         local result = _orig_get_book_info(self, filepath, do_cover_image)
         local local_cover = type(filepath) == "string"
             and _library_local_paths[filepath]
-        if result and local_cover then
+        local render_meta = type(filepath) == "string"
+            and _library_render_meta[filepath]
+        if result and (local_cover or render_meta) then
             local copy = {}
             for k, v in pairs(result) do copy[k] = v end
             copy._no_provider = true
+            if render_meta then
+                copy.has_meta = true
+                copy.ignore_meta = false
+                copy.title = render_meta.title
+                copy.authors = render_meta.author
+            end
             return copy
         end
         return result
@@ -433,12 +448,19 @@ local function patch_mosaic_archive_banner()
         end
         local border = target.bordersize or 0
         local cover_left = x + math.floor((self.width - target.dimen.w) / 2)
-        if self.entry._syncest_local_cover then
+        if self.entry._syncest_local_cover
+                or self.entry[M.CLOUD_ONLY_FLAG] then
             if not self._syncest_local_cover_widget then
                 local inner_w = math.max(1, target.dimen.w - 2 * border)
                 local inner_h = math.max(1, target.dimen.h - 2 * border)
-                local cover_bb = load_explicit_cover(
-                    self.entry._syncest_local_cover, inner_w, inner_h)
+                local cover_bb
+                if self.entry._syncest_local_cover then
+                    cover_bb = load_explicit_cover(
+                        self.entry._syncest_local_cover, inner_w, inner_h)
+                elseif type(self.entry.file) == "string" then
+                    local hash = cloud_covers.hash_from_uri(self.entry.file)
+                    cover_bb = hash and cloud_covers.load_cover_bb(hash, "grid")
+                end
                 if cover_bb then
                     local ok_iw, ImageWidget = pcall(
                         require, "ui/widget/imagewidget")

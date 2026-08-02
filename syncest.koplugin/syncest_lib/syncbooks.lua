@@ -378,20 +378,32 @@ local function server_reachable(opts)
     return ok and connected == true
 end
 
-local function safe_webdav_call(label, fn)
+local function safe_webdav_call(label, fn, block_timeout, total_timeout)
     local logger = require("logger")
     local http = require("socket.http")
     local ok_sutil, socketutil = pcall(require, "socketutil")
     local prev_timeout = http.TIMEOUT
+    local prev_file_block_timeout = ok_sutil and socketutil.FILE_BLOCK_TIMEOUT
+    local prev_file_total_timeout = ok_sutil and socketutil.FILE_TOTAL_TIMEOUT
+    block_timeout = block_timeout or SYNC_TIMEOUT
+    total_timeout = total_timeout or SYNC_TOTAL_TIMEOUT
     local started = now_ms()
 
-    logger.info("WebDavSync " .. tostring(label) .. ": start timeout=" .. tostring(SYNC_TIMEOUT))
-    http.TIMEOUT = SYNC_TIMEOUT
-    if ok_sutil then pcall(function() socketutil:set_timeout(SYNC_TIMEOUT, SYNC_TOTAL_TIMEOUT) end) end
+    logger.info("WebDavSync " .. tostring(label) .. ": start timeout=" .. tostring(block_timeout))
+    http.TIMEOUT = block_timeout
+    if ok_sutil then
+        socketutil.FILE_BLOCK_TIMEOUT = block_timeout
+        socketutil.FILE_TOTAL_TIMEOUT = total_timeout
+        pcall(function() socketutil:set_timeout(block_timeout, total_timeout) end)
+    end
 
     local ok, result = pcall(fn)
 
-    if ok_sutil then pcall(function() socketutil:reset_timeout() end) end
+    if ok_sutil then
+        pcall(function() socketutil:reset_timeout() end)
+        socketutil.FILE_BLOCK_TIMEOUT = prev_file_block_timeout
+        socketutil.FILE_TOTAL_TIMEOUT = prev_file_total_timeout
+    end
     http.TIMEOUT = prev_timeout
 
     if not ok then
@@ -408,7 +420,7 @@ end
 local function ensure_folder(api, url, user, pass)
     local code = safe_webdav_call("MKCOL", function()
         return api:createFolder(url, user, pass, "")
-    end)
+    end, 15, 180)
     return code == 201 or code == 405, code == 201
 end
 
@@ -429,11 +441,24 @@ M._inventory_state = inventory_state
 local function remote_book_inventory(rows, opts)
     local api, url, user, pass = webdav(opts)
     local inventory = {}
-    for _, row in ipairs(rows or {}) do
+    local total = #(rows or {})
+    if opts.on_inventory_progress then
+        opts.on_inventory_progress({ phase = "verify", done = 0, total = total })
+    end
+    for index, row in ipairs(rows or {}) do
         local files = safe_webdav_call("list books/" .. tostring(row.hash), function()
             return api:listFolder(url("books/" .. row.hash), user, pass, "", false)
-        end)
+        end, 10, 30)
         inventory[row.hash] = inventory_state(row, files)
+        if opts.on_inventory_progress then
+            opts.on_inventory_progress({
+                phase = "verify",
+                done = index,
+                total = total,
+                title = row.title,
+                hash = row.hash,
+            })
+        end
     end
     return inventory
 end
@@ -1056,7 +1081,7 @@ function M.uploadBookCover(book, opts)
     local cover_rel = string.format("books/%s/cover.png", book.hash)
     local code = safe_webdav_call("uploadCover " .. cover_rel, function()
         return api:uploadFile(url(cover_rel), user, pass, cover_path)
-    end)
+    end, 15, 300)
     return type(code) == "number" and code >= 200 and code <= 299
 end
 
@@ -1096,7 +1121,7 @@ function M.uploadBook(book, opts, cb)
     logger.info("WebDavSync uploadBook: uploading " .. file_rel)
     local code, err = safe_webdav_call("uploadBook " .. file_rel, function()
         return api:uploadFile(url(file_rel), user, pass, book.file_path)
-    end)
+    end, 15, 300)
     if type(code) ~= "number" or code < 200 or code > 299 then
         if cb then cb(false, err or "book upload failed", code) end
         return false, err or "book upload failed", code
@@ -1108,7 +1133,7 @@ function M.uploadBook(book, opts, cb)
             safe_title_filename(book.title or book.source_title))
         safe_webdav_call("uploadBookMarker " .. marker_rel, function()
             return api:uploadFile(url(marker_rel), user, pass, marker)
-        end)
+        end, 15, 180)
         os.remove(marker)
     end
 

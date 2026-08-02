@@ -72,8 +72,14 @@ function M.set_visible_hashes(menu)
     for i = first, last do
         local entry = items[i]
         if entry then
-            if entry[M.CLOUD_ONLY_FLAG] and type(entry.file) == "string" then
-                local hash = cloud_covers.hash_from_uri(entry.file)
+            local row = entry._readest_row
+            if row and (row.cloud_present or 0) == 1 then
+                local hash = row.hash
+                if not hash and type(entry.file) == "string"
+                        and entry.file:sub(1, #cloud_covers.URI_PREFIX)
+                            == cloud_covers.URI_PREFIX then
+                    hash = cloud_covers.hash_from_uri(entry.file)
+                end
                 if hash and hash ~= "" then
                     set[hash] = true
                     cloud_only_count = cloud_only_count + 1
@@ -96,6 +102,11 @@ function M.set_visible_hashes(menu)
     end
 
     cloud_covers.set_visible_hashes(set)
+    for hash in pairs(set) do
+        if not cloud_covers.cached_cover_path(hash) then
+            cloud_covers.trigger_download(hash)
+        end
+    end
     logger.info("ReadestLibrary set_visible_hashes: page=" .. page
         .. " range=" .. first .. ".." .. last
         .. " cloud_only=" .. cloud_only_count
@@ -127,7 +138,10 @@ function M.entry_from_group(group, opts)
     if opts.group_by and opts.with_cover ~= false then
         local shape = opts.shape or "grid"
         local uri = group_covers.build_uri(opts.group_by, group.name, shape)
-        entry.file = uri
+        entry.file = group_covers.materialize_path(
+            opts.group_by, group.name, shape, opts.store, opts.settings) or uri
+        bim_patch.register_render_path(
+            entry.file, group.display_name or group.name, nil)
         entry.is_file = true
         -- Stash by URI so the BIM patch can return a proper title for
         -- FakeCover when the composite isn't cached yet on first paint.
@@ -177,6 +191,12 @@ function M.entry_from_row(row, _opts)
         -- right-aligned with cloud rows that already use _no_provider.
         entry.mandatory = ext
         local local_cover = row.cover_path
+        -- A local EPUB may have no usable extracted cover even though its
+        -- cloud record has one. Reuse the cloud cache for all cloud-backed
+        -- rows, not only for cloud-only rows.
+        if not local_cover and (row.cloud_present or 0) == 1 then
+            local_cover = cloud_covers.cached_cover_path(row.hash)
+        end
         if not local_cover and type(row.file_path) == "string"
                 and row.file_path:find("/archive/", 1, true) then
             local DataStorage = require("datastorage")
@@ -205,11 +225,17 @@ function M.entry_from_row(row, _opts)
         -- Zen UI's folder-cover patch) don't disable cover rendering for it.
         -- The real book format is carried separately in `mandatory` and the
         -- backing row, so downloads still use the correct extension.
-        entry.file = cloud_covers.cover_uri(row.hash)
-        -- The URI above is renderer input only.  Leaving is_file=true makes
-        -- CoverMenu run its built-in document-open path after Syncest shows
-        -- the download dialog, which also triggers Zen's Opening banner.
-        entry.is_file = false
+        -- Once downloaded, give Zen/KOReader the real cached PNG. Synthetic
+        -- readest-cloud:// paths are useful while a cover is pending, but Zen
+        -- deliberately rejects them during normal image validation and falls
+        -- back to FakeCover even when the PNG exists.
+        entry.file = cloud_covers.cached_cover_path(row.hash)
+            or cloud_covers.cover_uri(row.hash)
+        bim_patch.register_render_path(entry.file, row.title, row.author)
+        -- Keep this renderer-facing entry file-like so Zen/coverbrowser asks
+        -- BIM for the cached cover. Tap dispatch is intercepted in bim_patch
+        -- before the stock document-open handler can see this synthetic URI.
+        entry.is_file = true
         entry[M.CLOUD_ONLY_FLAG] = true
         -- Zen UI's synthetic URI has no sidecar and would otherwise be
         -- classified as "new", hiding the actual cloud-state distinction.
