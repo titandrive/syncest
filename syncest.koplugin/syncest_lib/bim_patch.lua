@@ -287,12 +287,10 @@ local function patch_list_menu_item()
             if cover_bb then
                 local ok_iw, ImageWidget = pcall(require, "ui/widget/imagewidget")
                 if ok_iw then
-                    local scale = math.min(
-                        slot / cover_bb:getWidth(),
-                        slot / cover_bb:getHeight())
                     self._readest_cloud_cover = ImageWidget:new{
                         image = cover_bb,
-                        scale_factor = scale,
+                        width = slot,
+                        height = slot,
                     }
                     self._readest_cloud_cover:_render()
                 else
@@ -301,18 +299,20 @@ local function patch_list_menu_item()
             end
         elseif self.entry and self.entry[M.CLOUD_ONLY_FLAG]
                 and type(self.entry.file) == "string" then
-            local hash = cloud_covers.hash_from_uri(self.entry.file)
+            local hash = self.entry._readest_row and self.entry._readest_row.hash
+            if not hash and self.entry.file:sub(1, #cloud_covers.URI_PREFIX)
+                    == cloud_covers.URI_PREFIX then
+                hash = cloud_covers.hash_from_uri(self.entry.file)
+            end
             local cover_bb = hash and cloud_covers.load_cover_bb(hash, "list")
             if cover_bb then
                 local ok_iw, ImageWidget = pcall(require, "ui/widget/imagewidget")
                 if ok_iw then
                     local slot = math.max(1, self.height - 2)
-                    local scale = math.min(
-                        slot / cover_bb:getWidth(),
-                        slot / cover_bb:getHeight())
                     self._readest_cloud_cover = ImageWidget:new{
                         image = cover_bb,
-                        scale_factor = scale,
+                        width = slot,
+                        height = slot,
                     }
                     self._readest_cloud_cover:_render()
                 else

@@ -169,8 +169,9 @@ end
 -- item layer expects entry.file, entry.text, entry.is_file etc.
 -- _readest_row is preserved so the tap handler in librarywidget can
 -- dispatch on cloud_present / local_present without re-querying.
-function M.entry_from_row(row, _opts)
+function M.entry_from_row(row, opts)
     if not row then return nil end
+    opts = opts or {}
     local entry = {
         text         = row.title,
         author       = row.author,
@@ -229,8 +230,13 @@ function M.entry_from_row(row, _opts)
         -- readest-cloud:// paths are useful while a cover is pending, but Zen
         -- deliberately rejects them during normal image validation and falls
         -- back to FakeCover even when the PNG exists.
-        entry.file = cloud_covers.cached_cover_path(row.hash)
-            or cloud_covers.cover_uri(row.hash)
+        local cached_cover = cloud_covers.cached_cover_path(row.hash)
+        -- Grid needs a real PNG path because Zen rejects synthetic image
+        -- URIs. List view uses Syncest's direct thumbnail painter, which is
+        -- deliberately sized to match local EPUB thumbnails.
+        entry.file = opts.view_mode == "list"
+            and cloud_covers.cover_uri(row.hash)
+            or cached_cover or cloud_covers.cover_uri(row.hash)
         bim_patch.register_render_path(entry.file, row.title, row.author)
         -- Keep this renderer-facing entry file-like so Zen/coverbrowser asks
         -- BIM for the cached cover. Tap dispatch is intercepted in bim_patch

@@ -253,6 +253,8 @@ local SORT_VALUE_FOR_BOOK = {
 
 local function build_item_table(store, settings, search)
     local group_by = active_group_by(settings)
+    local view_mode = get_view_mode(settings)
+    local row_entry_opts = { view_mode = view_mode }
     local function add_search_back(items)
         if search and search ~= "" then
             table.insert(items, 1, {
@@ -270,7 +272,7 @@ local function build_item_table(store, settings, search)
         for _, row in ipairs(rows) do
             if not is_archive_only_row(row) then
                 row = decorate_archive_row(row)
-                items[#items + 1] = libraryitem.entry_from_row(row)
+                items[#items + 1] = libraryitem.entry_from_row(row, row_entry_opts)
             end
         end
         return add_search_back(items)
@@ -296,7 +298,6 @@ local function build_item_table(store, settings, search)
     -- then sort once. Stable on already-sorted input either way.
     -- Group cells get a mini-cover preview in both view modes — a 2x2
     -- mosaic for Grid (mosaic) and a 1x4 horizontal strip for List.
-    local view_mode = get_view_mode(settings)
     local group_entry_opts = {
         group_by   = group_by,
         with_cover = true,
@@ -315,7 +316,7 @@ local function build_item_table(store, settings, search)
         if not is_archive_only_row(row) then
             row = decorate_archive_row(row)
             merged[#merged + 1] = {
-                entry = libraryitem.entry_from_row(row),
+                entry = libraryitem.entry_from_row(row, row_entry_opts),
                 sort_value = b_value(row),
             }
         end
