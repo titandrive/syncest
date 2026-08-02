@@ -510,38 +510,18 @@ end
 function M.refreshCloud()
     if not M._opts or not M._store or not M._opts.client then return end
     local cloud_covers = require("syncest_lib.cloud_covers")
-    local progress = InfoMessage:new{
-        text = _("Refreshing cloud library…"),
-        timeout = 30,
-    }
-    UIManager:show(progress)
-    NetworkMgr:runWhenOnline(function()
-        Trapper:wrap(function()
-            cloud_covers.reset_download_failures()
-            syncbooks.pullBooks({
-                client = M._opts.client,
-                settings = M._opts.settings,
-                store = M._store,
-                full_refresh = true,
-            }, function(success)
-                UIManager:close(progress)
-                if success then
-                    -- This action is an authoritative *cloud* refresh. Do
-                    -- not immediately repopulate the freshly reset catalog
-                    -- from local/archive folders; an empty library.json must
-                    -- produce an empty cloud-library screen. Normal library
-                    -- opening and explicit local scans remain responsible
-                    -- for discovering device files.
-                    M.refresh()
-                    if M._menu then UIManager:setDirty(M._menu, "ui") end
-                else
-                    UIManager:show(InfoMessage:new{
-                        text = _("Cloud library refresh failed."),
-                        timeout = 3,
-                    })
-                end
-            end)
-        end)
+    cloud_covers.reset_download_failures()
+    UIManager:show(InfoMessage:new{
+        text = _("Refreshing cloud library in background…"),
+        timeout = 2,
+    })
+    M._runCloudSync(M._opts, M._store, true, function(success)
+        UIManager:show(InfoMessage:new{
+            text = success
+                and _("Cloud library refreshed.")
+                or _("Cloud library refresh failed."),
+            timeout = 3,
+        })
     end)
 end
 
@@ -622,7 +602,7 @@ end
 -- explicit user action; auto-sync applies to reading data, not publication
 -- of the local book catalog.
 -- ---------------------------------------------------------------------------
-local function runCloudSync(opts, store)
+local function runCloudSync(opts, store, full_refresh, completion_callback)
     if not opts.client then
         logger.info("ReadestLibrary runCloudSync: no client configured, skipping")
         return
@@ -662,25 +642,117 @@ local function runCloudSync(opts, store)
         M.refresh()
     end
 
-    syncbooks.syncBooks({
-        client = opts.client,
-        settings = opts.settings, store = store,
-    }, "pull", function(success, msg, status)
-        reconcile()
-        done(success, msg, status)
-    end)
-end
+    -- WebDAV's LuaSocket transport is synchronous. Never execute it on the
+    -- UI thread: slow mobile DNS or a route transition can otherwise block
+    -- Android long enough to trigger an ANR kill. The child only fetches and
+    -- serializes the response; all SQLite mutations remain in the parent.
+    if M._cloud_refresh_pid then
+        if not full_refresh then
+            logger.info("ReadestLibrary cloud refresh already running, skipped")
+            return
+        end
+        -- Manual Refresh is authoritative and supersedes the automatic pull
+        -- launched when the library opened.
+        local FFIUtil = require("ffi/util")
+        FFIUtil.terminateSubProcess(M._cloud_refresh_pid)
+        M._cloud_refresh_pid = nil
+        logger.info("ReadestLibrary replaced automatic refresh with manual refresh")
+    end
+    local server = opts.client.server or opts.settings.sync_server
+    local DataStorage = require("datastorage")
+    local FFIUtil = require("ffi/util")
+    M._cloud_refresh_generation = (M._cloud_refresh_generation or 0) + 1
+    local generation = M._cloud_refresh_generation
+    local result_path = DataStorage:getSettingsDir()
+        .. "/syncest_library_refresh_" .. tostring(generation) .. ".json"
+    os.remove(result_path)
 
--- Cloud sync HTTP is synchronous on platforms without the Turbo looper
--- (macOS desktop, most KOReader builds with the lightweight networking
--- layer). Calling it inline from M.open blocks the UI loop, so
--- UIManager:show(menu) doesn't actually repaint until the sync returns
--- — visible to the user as a frozen Library on open. Pushing it through
--- UIManager:scheduleIn yields back to the event loop first, lets the
--- menu paint with the pre-sync local snapshot, and only then issues the
--- HTTP. The user still sees a brief blocking window when the request
--- fires, but at least content is on screen instead of a black hole.
--- Plan B (true non-blocking via runInSubProcess) is a bigger refactor.
+    local function apply_payload(payload)
+        local ok_json, result = pcall(require("json").decode, payload or "")
+        if not ok_json or type(result) ~= "table" then
+            reconcile()
+            done(false, "invalid background response", nil)
+            return
+        end
+
+        -- Reuse the normal catalog-application path with an in-memory client;
+        -- this callback performs no network I/O.
+        local replay_client = {}
+        function replay_client:pullBooks(_params, callback)
+            callback(result.success, result.body, result.status)
+        end
+        syncbooks.pullBooks({
+            client = replay_client,
+            settings = opts.settings,
+            store = store,
+            full_refresh = full_refresh == true,
+        }, function(success, msg, status)
+            reconcile()
+            done(success, msg, status)
+            if completion_callback then completion_callback(success) end
+        end)
+    end
+
+    local launched, pid = pcall(FFIUtil.runInSubProcess, function()
+        local ok, payload = xpcall(function()
+            local json = require("json")
+            local Client = require("webdav_syncclient")
+            local client = Client:new{ server = server }
+            local result = { success = false, body = { books = {} } }
+            client:pullBooks({ since = 0 }, function(success, body, status)
+                result.success = success == true
+                result.body = body or { books = {} }
+                result.status = status
+            end)
+            return json.encode(result)
+        end, debug.traceback)
+        if not ok then
+            payload = require("json").encode({
+                success = false,
+                body = { books = {} },
+                status = tostring(payload),
+            })
+        end
+        local file = io.open(result_path, "w")
+        if file then
+            file:write(payload)
+            file:close()
+        end
+    end)
+    if not launched or not pid then
+        logger.warn("ReadestLibrary cloud refresh launch failed: " .. tostring(pid))
+        os.remove(result_path)
+        return
+    end
+    M._cloud_refresh_pid = pid
+
+    local started_at = os.time()
+    local poll
+    poll = function()
+        if not FFIUtil.isSubProcessDone(pid) then
+            if os.time() - started_at < 75 then
+                UIManager:scheduleIn(0.1, poll)
+                return
+            end
+            FFIUtil.terminateSubProcess(pid)
+            if M._cloud_refresh_pid == pid then M._cloud_refresh_pid = nil end
+            os.remove(result_path)
+            logger.warn("ReadestLibrary cloud refresh timed out")
+            return
+        end
+        if M._cloud_refresh_pid == pid then M._cloud_refresh_pid = nil end
+        local file = io.open(result_path, "r")
+        local payload = file and file:read("*a") or nil
+        if file then file:close() end
+        os.remove(result_path)
+        apply_payload(payload)
+    end
+    UIManager:scheduleIn(0.1, poll)
+end
+M._runCloudSync = runCloudSync
+
+-- Yield once so the cached library paints before the background subprocess
+-- starts. Network work itself is isolated by runCloudSync above.
 local SYNC_DEFER_SECONDS = 0.05
 
 local function runOpenSync(opts, store, menu)
@@ -701,7 +773,9 @@ local function runOpenSync(opts, store, menu)
                     store = store,
                     ui = opts.ui,
                 })
-                if NetworkMgr:willRerunWhenOnline(function()
+                local android = type(Device.isAndroid) == "function"
+                    and Device:isAndroid()
+                if not android and NetworkMgr:willRerunWhenOnline(function()
                         logger.info("ReadestLibrary network rerun: cloud sync")
                         local rerun_ok, rerun_err = xpcall(function()
                             runCloudSync(opts, store)

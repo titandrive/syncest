@@ -154,6 +154,14 @@ Manual stats pushes and pulls reconcile the complete statistics history. Automat
 
 ## Changelog
 
+### 1.2.2
+
+- Fix Cloud Library refresh on Android mobile data by bypassing KOReader's Wi-Fi-only online gate.
+- Move automatic catalog pulls and lazy cover downloads into subprocesses so slow or unavailable networking cannot freeze the UI or trigger an Android ANR.
+- Show the cached library immediately and apply automatic cloud updates silently when they arrive.
+- Make Manual Refresh non-blocking and authoritative; it replaces any automatic refresh already in progress and reports completion.
+- Prevent overlapping automatic cloud-refresh jobs.
+
 ### 1.2.1
 
 - Prevent Zen UI's generic cover handler from opening synthetic cloud-cover paths behind Syncest dialogs.

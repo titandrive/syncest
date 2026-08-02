@@ -257,14 +257,7 @@ local function process_queue()
     _downloading = true
     logger.info("WebDavSync cover download: starting " .. tag_for(hash))
 
-    local syncbooks = require("syncest_lib.syncbooks")
-    syncbooks.downloadCover(
-        {hash = hash},
-        {
-            settings   = _opts and _opts.settings,
-            covers_dir = M.covers_dir(),
-        },
-        function(success, path_or_err, status)
+    local function finish_download(success, path_or_err, status)
             _cover_pending[hash] = nil
             _downloading = false
             if not success then
@@ -323,7 +316,67 @@ local function process_queue()
             end
             local UIManager = require("ui/uimanager")
             UIManager:nextTick(process_queue)
+    end
+
+    -- Cover extraction is triggered while cells are being built, so an inline
+    -- WebDAV request here blocks painting and input. Fork the synchronous
+    -- transfer and poll it from the UI loop; only the result handling above
+    -- runs in the parent process.
+    local FFIUtil = require("ffi/util")
+    local DataStorage = require("datastorage")
+    local result_path = DataStorage:getSettingsDir()
+        .. "/syncest_cover_download_" .. hash .. ".json"
+    os.remove(result_path)
+    local settings = _opts and _opts.settings
+    local covers_dir = M.covers_dir()
+    local launched, pid = pcall(FFIUtil.runInSubProcess, function()
+        local json = require("json")
+        local syncbooks = require("syncest_lib.syncbooks")
+        local result = { success = false, message = "download failed" }
+        syncbooks.downloadCover({ hash = hash }, {
+            settings = settings,
+            covers_dir = covers_dir,
+        }, function(success, path_or_err, status)
+            result.success = success == true
+            result.message = path_or_err
+            result.status = status
         end)
+        local file = io.open(result_path, "w")
+        if file then
+            file:write(json.encode(result))
+            file:close()
+        end
+    end)
+    if not launched or not pid then
+        finish_download(false, tostring(pid or "subprocess launch failed"))
+        return
+    end
+
+    local started_at = os.time()
+    local poll
+    poll = function()
+        if not FFIUtil.isSubProcessDone(pid) then
+            if os.time() - started_at < 75 then
+                require("ui/uimanager"):scheduleIn(0.1, poll)
+                return
+            end
+            FFIUtil.terminateSubProcess(pid)
+            os.remove(result_path)
+            finish_download(false, "timeout")
+            return
+        end
+        local file = io.open(result_path, "r")
+        local payload = file and file:read("*a") or nil
+        if file then file:close() end
+        os.remove(result_path)
+        local ok_json, result = pcall(require("json").decode, payload or "")
+        if not ok_json or type(result) ~= "table" then
+            finish_download(false, "invalid background response")
+            return
+        end
+        finish_download(result.success, result.message, result.status)
+    end
+    require("ui/uimanager"):scheduleIn(0.1, poll)
 end
 
 function M.trigger_download(hash)
