@@ -3827,6 +3827,9 @@ function Syncest:_backgroundSyncBooksLibrary(
                 user_id = settings.user_id,
                 db_path = db_path,
             })
+            if mode == "push" or mode == "both" then
+                syncbooks.enrichLocalMetadata(store)
+            end
             local client = WebDavAuthChild:getClient(settings)
             local done_success, done_msg, done_status
             syncbooks.syncBooks({

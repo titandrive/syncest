@@ -154,6 +154,13 @@ Manual stats pushes and pulls reconcile the complete statistics history. Automat
 
 ## Changelog
 
+### 1.2.5
+
+- Preserve cloud-only book titles across page changes and delayed Zen UI refreshes by rendering from title-named, hash-isolated thumbnails instead of exposing hash-named cover files.
+- Extract embedded title, author, and metadata from local books during background bulk pushes when KOReader sidecar metadata is missing.
+- Publish the EPUB/PDF metadata to `library.json` instead of treating an `Author - Title` filename as canonical metadata.
+- Keep catalog metadata intact rather than applying display-time title parsing or stripping.
+
 ### 1.2.4
 
 - Speed up manual reading-progress pushes by reducing normal progress-history bookkeeping to one read and one write.

@@ -172,9 +172,11 @@ end
 function M.entry_from_row(row, opts)
     if not row then return nil end
     opts = opts or {}
+    local display_title = row.title
+    local display_author = row.author
     local entry = {
-        text         = row.title,
-        author       = row.author,
+        text         = display_title,
+        author       = display_author,
         series       = row.series,
         series_index = row.series_index,
         cover_path   = row.cover_path,
@@ -236,8 +238,11 @@ function M.entry_from_row(row, opts)
         -- deliberately sized to match local EPUB thumbnails.
         entry.file = opts.view_mode == "list"
             and cloud_covers.cover_uri(row.hash)
-            or cached_cover or cloud_covers.cover_uri(row.hash)
-        bim_patch.register_render_path(entry.file, row.title, row.author)
+            or (cached_cover and cloud_covers.display_cover_path(
+                row.hash, display_title))
+            or cloud_covers.cover_uri(row.hash)
+        bim_patch.register_render_path(
+            entry.file, display_title, display_author)
         -- Keep this renderer-facing entry file-like so Zen/coverbrowser asks
         -- BIM for the cached cover. Tap dispatch is intercepted in bim_patch
         -- before the stock document-open handler can see this synthetic URI.
@@ -262,8 +267,8 @@ function M.entry_from_row(row, opts)
         -- Stash title/author by hash so the patched BIM (keyed by URI
         -- /path, not by row) can return them for FakeCover.
         cloud_covers.set_meta(row.hash, {
-            title  = row.title,
-            author = row.author,
+            title  = display_title,
+            author = display_author,
         })
     end
     entry._readest_row = row

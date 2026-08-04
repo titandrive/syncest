@@ -146,6 +146,39 @@ local function write_text(path, value)
     return true
 end
 
+-- Return a real, view-sized PNG whose basename is the catalog title. Zen UI
+-- may bypass Syncest metadata during a delayed CoverBrowser refresh and fall
+-- back to the filename; exposing <hash>.png there turns every title into a
+-- hash. Keeping the hash in the parent directory preserves uniqueness while
+-- making even that fallback human-readable.
+function M.display_cover_path(hash, title)
+    local lfs = require("libs/libkoreader-lfs")
+    local source_path = cover_path_for(hash)
+    if lfs.attributes(source_path, "mode") ~= "file" then return nil end
+    local token = source_token(source_path)
+    if not token then return nil end
+
+    local util = require("util")
+    local dir = thumbnail_dir() .. "/display/" .. tostring(hash)
+    util.makePath(dir)
+    local filename = util.getSafeFilename(
+        tostring(title or "Untitled") .. ".png", dir, 200, 10)
+    local path = dir .. "/" .. filename
+    local meta_path = path .. ".meta"
+    if lfs.attributes(path, "mode") == "file"
+            and read_text(meta_path) == token then
+        return path
+    end
+
+    local bb = M.load_cover_bb(hash, "grid")
+    if not bb then return nil end
+    local wrote = bb:writeToFile(path, "png")
+    bb:free()
+    if not wrote then return nil end
+    write_text(meta_path, token)
+    return path
+end
+
 local function copy_bb(bb)
     if not bb then return nil end
     local ok, copy = pcall(bb.copy, bb)

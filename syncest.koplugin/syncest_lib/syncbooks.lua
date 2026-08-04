@@ -277,6 +277,60 @@ local function row_to_wire(row)
 end
 M._row_to_wire = row_to_wire
 
+-- Fill missing/fallback catalog metadata from the book itself before a bulk
+-- push publishes library.json. Local scanning normally reads KOReader
+-- sidecars, but older or unopened books may have no doc_props even though the
+-- EPUB/PDF contains a real title and author.
+function M.enrichLocalMetadata(store)
+    if not store then return 0 end
+    local lfs = require("libs/libkoreader-lfs")
+    local ok_registry, DocumentRegistry = pcall(
+        require, "document/documentregistry")
+    if not ok_registry or not DocumentRegistry then return 0 end
+    local json = require("json")
+    local updated = 0
+
+    for _, row in ipairs(store:listLocalBooks() or {}) do
+        local metadata_missing = not row.metadata_json
+            or row.metadata_json == "" or row.metadata_json == "{}"
+        local author_missing = not row.author or row.author == ""
+        if row.local_present == 1 and row.file_path
+                and (metadata_missing or author_missing)
+                and lfs.attributes(row.file_path, "mode") == "file"
+                and DocumentRegistry:hasProvider(row.file_path) then
+            local ok_doc, doc = pcall(
+                DocumentRegistry.openDocument, DocumentRegistry, row.file_path)
+            if ok_doc and doc then
+                local loaded = true
+                if doc.loadDocument then
+                    local ok_load, load_result = pcall(
+                        doc.loadDocument, doc, false)
+                    loaded = ok_load and load_result ~= false
+                end
+                local props
+                if loaded and doc.getProps then
+                    local ok_props, result = pcall(doc.getProps, doc)
+                    if ok_props and type(result) == "table" then props = result end
+                end
+                pcall(doc.close, doc)
+                if props and (props.title or props.authors) then
+                    local ok_json, encoded = pcall(json.encode, props)
+                    store:upsertBook({
+                        hash = row.hash,
+                        title = props.title or row.title,
+                        author = props.authors or row.author,
+                        metadata_json = ok_json and encoded or row.metadata_json,
+                        updated_at = math.floor(os.time() * 1000),
+                    })
+                    updated = updated + 1
+                end
+            end
+        end
+    end
+    logger.info("WebDavSync enrichLocalMetadata: updated=" .. tostring(updated))
+    return updated
+end
+
 local function rich_book_marker(book)
     local wire = row_to_wire(book) or {}
     local metadata = wire.metadata or {}
